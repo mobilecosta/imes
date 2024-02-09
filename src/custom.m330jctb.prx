@@ -1,0 +1,3416 @@
+#INCLUDE "TBICONN.CH"
+#INCLUDE "FILEIO.CH"
+#INCLUDE "M330JCTB.CH"
+#INCLUDE "PROTHEUS.CH"
+#INCLUDE "FWLIBVERSION.CH"
+#INCLUDE "FWEVENTVIEWCONSTS.CH"
+#DEFINE _RMCONS "1A"
+Static aCt5 := {}	 // Variavel para armazenar os lancamentos padroes envolvidos na rotina - Melhora de perfomance na DetProva para SigaCtb
+
+/*
+±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±
+±±ÚÄÄÄÄÄÄÄÄÄÄÂÄÄÄÄÄÄÄÄÄÄÂÄÄÄÄÄÄÄÂÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÂÄÄÄÄÄÄÂÄÄÄÄÄÄÄÄÄÄÄ¿±±
+±±³Fun‡„o    ³M330JCTB  ³ Autor ³Rodrigo de A Sartorio  ³ Rev. ³09.08.2006 ³±±
+±±ÃÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÁÄÄÄÄÄÄÄÁÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÁÄÄÄÄÄÄÁÄÄÄÄÄÄÄÄÄÄÄ´±±
+±±³          ³Rotina de contabilizacao atraves de job                      ³±±
+±±ÃÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´±±
+±±³Parametros³cEmp     - Empresa                                           ³±±
+±±³          ³cFil     - Filial                                            ³±±
+±±³          ³cNomTRC  - Dados dos arquivos de contabilidade               ³±±
+±±³          ³cNomTRC1 - Indice dos arquivos de contabilidade              ³±±
+±±³          ³cChave   - Chave de posicionamento da tabela TRC             ³±±
+±±³          ³nTotRegs - Total de registros a serem processados            ³±±
+±±³          ³nz       - 1o. Contador da thread em operacao                ³±±
+±±³          ³nx       - 2o. Contador da thread em operacao                ³±±
+±±³          ³nHdlPRV  - Identificador do arquivo                          ³±±
+±±³          ³cLoteEst - Lote do estoque                                   ³±±
+±±ÃÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´±±
+±±³Retorno   ³Nenhum                                                       ³±±
+±±ÃÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´±±
+±±³Uso       ³ Materiais                                                   ³±±
+±±ÀÄÄÄÄÄÄÄÄÄÄÁÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ±±
+±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±
+ßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßß
+*/
+Function M330JCTB(cEmp,cFil,cNomTrc,cNomTRC1,cChave,nTotRegs,nZ,nX,nHdlPrv,cLoteEst,cArquivo,aDadosProva,cJobFile,lProcCV3,aUser,dDtProc,cNomTR2)
+// Variaveis que controlam valor dos lancamentos
+LOCAL n667669   :=0
+LOCAL nValLancto:=0
+LOCAL nTotal    :=0
+LOCAL nCount    :=0
+LOCAL nI        :=0
+Local nJ        :=0
+
+LOCAL nHdl	    :=	0
+Local cThread as character
+
+PRIVATE cUserName := ''
+
+// Utilizado para verificar se gera tabela CV3
+DEFAULT lProcCV3 := .T.
+
+// Apaga arquivo ja existente
+If File(cJobFile)
+	fErase(cJobFile)
+EndIf
+
+nHdl := MSFCreate(cJobFile)
+fWrite(nHdl,cFil)                  		// Filial          02
+fWrite(nHdl,StrZero(nHdlPRV,10,0))   	// ID do arquivo   10
+fWrite(nHdl,PADR(cLoteEst,15))     		// Lote do arquivo 15
+
+cThread := StrZero(nX,2) // Numero da Thread
+
+// STATUS 1 - Iniciando execucao do Job
+A330LckGlb("C"+cEmp+cFil+cThread)
+
+// Seta job para empresa filial desejada
+cFilAnt := cFil
+
+//Atualiza DATABASE conforme data logada
+dDataBase := dDtProc
+
+// STATUS 2 - Conexao efetuada com sucesso
+PutGlbValue("C"+cEmp+cFil+cThread, "2" )
+A330ULckGlb("C"+cEmp+cFil+cThread)
+
+//Troca o Alias SB2 para a tabela alternativa
+If 'TR2' $ cNomTR2
+	A330AbreB2(cNomTR2)
+EndIf
+
+// Abre tabela em modo compartilhado
+dbUseArea(.T.,"TOPCONN",cNomTRC,"TRC",.T.)
+nJ := Len(GetTRStru(2))
+For nI := 1 To nJ
+	dbSetIndex(cNomTRC +StrZero(nI,2))
+Next nI
+dbSetOrder(1)
+dbGoTop()
+
+// Posiciona no registro inicial
+dbSeek(cFil+cChave)
+
+//Carrega a variavel cUserName
+cUserName := aUser[1]
+__cUserID := aUser[2]
+
+ConOut("[MATA330] [Thread "+padl(cValToChar(ThreadID()),5)+"] "+dtoc(Date())+" "+Time()+STR0001+cJobFile) //" Inicio do job de contabilizacao do MATA330 "
+
+While !KillApp() .And.  !TRC->(Eof()) .And. nCount < nTotRegs
+
+	//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+	//³ Checa se deve processar registro                             ³
+	//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+	If  TRC->TRC_AVALTR == "N" .Or. (TRC->TRC_AVALTR == "S" .And. QtdComp(n667669,.T.) > QtdComp(0,.T.))
+		//-- Posiciona arquivo e registro
+		dbSelectArea(TRC->TRC_ALIAS)
+		MSGoto(TRC->TRC_RECTRC)
+		//-- Posiciona registro na tabela SB1
+		SB1->(MsGoto(TRC->TRC_RECSB1))
+
+		//-- Posiciona registro na tabela SF4
+		If TRC->TRC_ALIAS<>"SD3"
+			SF4->(MsGoto(TRC->TRC_RECSF4))
+		Else
+			RecLock("SD3",.F.)
+			Replace D3_DTLANC With dDataBase
+			SD3->(MsUnlock())
+
+			If TRC->TRC_RECSGS > 0
+				SGS->(dbGoto(TRC->TRC_RECSGS))
+			EndIf
+		EndIf
+
+		//-- Gera lancamento
+		nValLancto:=DETPROVA(nHdlPrv,TRC->TRC_LANTRC,TRC->TRC_ROTTRC,cLoteEst,,,,,IIf(lProcCV3,Nil,''),aCt5,,,,aDadosProva)
+		nTotal+=nValLancto
+		//-- Checa tipo de lancamento
+		If TRC->TRC_LANTRC $ "667#669"
+			n667669 := nValLancto
+		Else
+			n667669 :=0
+		EndIf
+	EndIf
+
+	nCount ++
+	TRC->(dbSkip())
+End
+
+//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+//³ Atualiza dados do semaforo e fecha semaforo                  ³
+//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+fWrite(nHdl,StrZero(nTotal,18,0))						// Total             18
+fWrite(nHdl,PADR(cArquivo,20))							// Arquivo           20
+fWrite(nHdl,Substr(Array2STR(aDadosProva,.F.),1,80))	// Valor da DetProva 80
+
+// STATUS 3 - Processamento efetuado com sucesso
+A330LckGlb("C"+cEmp+cFil+cThread)
+PutGlbValue("C"+cEmp+cFil+cThread, "3" )
+A330ULckGlb("C"+cEmp+cFil+cThread)
+
+// Fecha arquivo de controle do MATA330
+fClose(nHdl)
+
+// Fecha a tabela de trabalho TRC
+If Select("TRC") > 0
+	TRC->(DBCloseArea())
+EndIf
+
+ConOut("[MATA330] [Thread "+padl(cValToChar(ThreadID()),5)+"] "+dtoc(Date())+" "+Time()+STR0002+cJobFile) //" Final do job de contabilizacao do MATA330 "
+
+RETURN
+
+/*
+±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±
+±±ÚÄÄÄÄÄÄÄÄÄÄÂÄÄÄÄÄÄÄÄÄÄÂÄÄÄÄÄÄÄÂÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÂÄÄÄÄÄÄÂÄÄÄÄÄÄÄÄÄÄÄ¿±±
+±±³Fun‡„o    ³M330JPRC  ³ Autor ³Rodrigo de A Sartorio  ³ Rev. ³07.05.2007 ³±±
+±±ÃÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÁÄÄÄÄÄÄÄÁÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÁÄÄÄÄÄÄÁÄÄÄÄÄÄÄÄÄÄÄ´±±
+±±³          ³Rotina de chamada de STORED PROCEDURE atraves de job         ³±±
+±±ÃÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´±±
+±±³Parametros³cEmp         - Empresa                                       ³±±
+±±³          ³cFil         - Filial                                        ³±±
+±±³          ³aProcNam     - Vetor com os nomes das procedures a serem     ³±±
+±±³          ³               executadas (MAT004 e MAT016)                  ³±±
+±±³          ³aDataProc    - Dados enviados para chamada da procedure      ³±±
+±±³          ³cJobFile     - Nome do arquivo para controle do JOB          ³±±
+±±ÃÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´±±
+±±³Retorno   ³Nenhum                                                       ³±±
+±±ÃÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´±±
+±±³Uso       ³ Materiais                                                   ³±±
+±±ÀÄÄÄÄÄÄÄÄÄÄÁÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ±±
+±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±
+ßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßß
+*/
+Function M330JPRC(cEmp,cFil,aProcNam,aDataProc,cJobFile,cFilBack)
+Local nHd1	    := 0
+Local aResult   := {}
+Local lPropPr0  := SuperGetMV("MV_PRODPR0",.F.,1) == 1
+
+// Apaga arquivo ja existente
+If File(cJobFile)
+	fErase(cJobFile)
+EndIf
+
+// Criacao do arquivo de controle de jobs
+nHd1 := MSFCreate(cJobFile)
+
+// STATUS 1 - Iniciando execucao do Job
+A330LckGlb("P"+cEmp+cFil)
+
+// Seta job para empresa filial desejada
+cFilant := cFil
+
+// STATUS 2 - Conexao efetuada com sucesso
+PutGlbValue("P"+cEmp+cFil, "2" )
+A330ULckGlb("P"+cEmp+cFil)
+
+ConOut("[MATA330] "+dtoc(Date())+" "+Time()+STR0003+ " " + cFilAnt + " " + cJobFile) //" Inicio do job de geração do TRB do MATA330 "
+
+aResult:=TCSpExec(	xProcedures( aProcNam[1] ),;
+					cFil,;
+					aDataProc[01],;				// 01. Parametro MV_NIVALT
+					aDataProc[02],;				// 02. Parametro MV_LOCPROC
+					aDataProc[03],;				// 03. Data final do processamento
+					aDataProc[04],;				// 04. Deleta movimentos de Estorno
+					aDataProc[05],;				// 05. Gera estrutura p/movimentos
+					aDataProc[06],;				// 06. Metodo Apropriacao 1 = Sequencial / 2 = Mensal / 3 = Diaria
+					aDataProc[07],;				// 07. Parametro MV_CUSFIFO
+					aDataProc[08],;				// 08. Parametro MV_RASTRO
+					aDataProc[09],;				// 09. Parametro MV_LOCALIZ
+					aDataProc[10],;				// 10. Parametro MV_CQ
+					aDataProc[11],;				// 11. Data de inicio do processamento
+					aDataProc[12],;				// 12. Tamanho do campo D3_DOC
+					aDataProc[13],;				// 13. Identificacao da variavel cOpcoes
+					aDataProc[14],;				// 14. 0 = Custo por Armazem / 1 = Custo por Filial / 2 = Custo por Empresa
+					aDataProc[15],;				// 15. Parametro MV_PRODPR0
+					aDataProc[16],;				// 16. Data Base do sistema
+					aDataProc[17],;				// 17. Parametro MV_NEGESTR
+					aDataProc[18],;				// 18. Numero do recno da tabela SM0
+					aDataProc[19],;				// 19. Processa Mov. Internos Valorizados  1 = Antes / 2 = Depois
+					aDataProc[20],;				// 20. Codigo do Pais
+					aDataProc[21],;				// 21. Codigo da Filial (Convertida para valor numerico)
+					aDataProc[22],;				// 22. Codigo do produto MANUTENCAO, utilizado para desconsidera-lo na procedure
+					aDataProc[23],;				// 23. Parametro MV_MOEDACM
+					aDataProc[24],;				// 24. Parametro MV_D3SERVI
+					aDataProc[25],;				// 25. Indica se existe integracao com WMS
+					aDataProc[26],;				// 26. Indica se deve calcular o custo de reposicao
+					aDataProc[27],;				// 27. Recalcula niveis da estrutura (1 - sim / 0 - nao)
+					aDataProc[28],;				// 28. Indica a forma de localizacao das notas de transferencia ( 1 = A1_FILTRF e A2_FILTRF / 0 = A1_CGC e A2_CGC )
+					aDataProc[29],;				// 29. Indica se utiliza o parametro MV_SEQ500
+					aDataProc[30],;				// 30. Conteudo do parametro MV_ULMES
+					aDataProc[31],;				// 31. Indica a integração com o novo WMS
+					aDataProc[32],;				// 32. MOD caso o campo B1_CCCUSTO esteja preenchido (IsProdMod)
+					aDataProc[33],;				// 33. Conteudo do parametro MV_SEQREBE
+					aDataProc[34],;				// 34. Conteudo do parametro MV_M330JCM
+					aDataProc[35],; 			// 35. Conteudo do parametro MV_PROCQE6
+					aDataProc[36],;             // 36. Filial que esta processando o recalculo
+					aDataProc[37])              // 37. Nome físico do Alias SB2
+
+ConOut("[MATA330] "+dtoc(Date())+" "+Time()+STR0004+ " " + cFilAnt + " " + cJobFile) //" Final do job de geração do TRB do MATA330 "
+
+If Empty(aResult)
+	// STATUS 4 - 'Erro na chamada do processo'
+	A330LckGlb("P"+cEmp+cFil)
+	PutGlbValue("P"+cEmp+cFil,"4")
+	A330ULckGlb("P"+cEmp+cFil)
+ElseIf aResult[1] == "0"
+	// STATUS 5 - 'Reprocessamento com Erro'
+	A330LckGlb("P"+cEmp+cFil)
+	PutGlbValue("P"+cEmp+cFil,"5")
+	A330ULckGlb("P"+cEmp+cFil)
+ElseIf aResult[1] == "1"
+
+	If lPropPr0
+		ConOut("[MATA330] "+dtoc(Date())+" "+Time()+" " + OemToAnsi(STR0017) + " " + cFilAnt ) // ## "Procedures: Inicio da proporcionalização o custo dos apontamentos da ordem de produção na filial: "
+		aResult := TCSPEXEC( xProcedures( aProcNam[2] ), cFil ) // Executa a procedure MAT016
+
+		If Empty(aResult)
+			// STATUS 4 - 'Erro na chamada do processo'
+			A330LckGlb("P"+cEmp+cFil)
+			PutGlbValue("P"+cEmp+cFil,"4")
+			A330ULckGlb("P"+cEmp+cFil)
+		ElseIf aResult[1] == "0"
+			// STATUS 5 - 'Reprocessamento com Erro'
+			A330LckGlb("P"+cEmp+cFil)
+			PutGlbValue("P"+cEmp+cFil,"5")
+			A330ULckGlb("P"+cEmp+cFil)
+		EndIf
+	EndIf
+
+	If aResult[1] == "1"
+		// STATUS 3 - Processamento efetuado com sucesso
+		A330LckGlb("P"+cEmp+cFil)
+		PutGlbValue("P"+cEmp+cFil,"3")
+		A330ULckGlb("P"+cEmp+cFil)
+
+		If lPropPr0
+			ConOut("[MATA330] "+dtoc(Date())+" "+Time()+" " + OemToAnsi(STR0018) + " " + cFilAnt ) // "Procedures: Fim da proporcionalização o custo dos apontamentos da ordem de produção na filial:"
+		EndIf
+	EndIf
+
+ElseIf aResult[1] == "2"
+	// STATUS 6 - 'Instalação incorreta da procedure'
+	A330LckGlb("P"+cEmp+cFil)
+	PutGlbValue("P"+cEmp+cFil,"6")
+	A330ULckGlb("P"+cEmp+cFil)
+EndIf
+
+// limpa array
+ASIZE(aDataProc, 0 )
+
+RETURN
+
+/*/
+ÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜ
+±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±
+±±ÚÄÄÄÄÄÄÄÄÄÄÂÄÄÄÄÄÄÄÄÄÄÄÄÄÄÂÄÄÄÄÄÄÄÂÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÂÄÄÄÄÄÄÂÄÄÄÄÄÄÄÄÄ¿±±
+±±³Funcao    ³M330QtdThr    ³ Autor ³ TOTVS S/A          ³ Data ³06.07.11 ³±±
+±±ÃÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÁÄÄÄÄÄÄÄÁÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÁÄÄÄÄÄÄÁÄÄÄÄÄÄÄÄÄ´±±
+±±³Descri‡…o ³Funcao utilizada para calcular a quantidade de threads a    ³±±
+±±³          ³serem executadas em paralelo no processo de ajuste dos      ³±±
+±±³          ³movimentos de transferencia de Filiais.                     ³±±
+±±ÃÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´±±
+±±³ Uso      ³ MATA330                                                    ³±±
+±±ÀÄÄÄÄÄÄÄÄÄÄÁÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ±±
+±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±
+ßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßß
+/*/
+Function M330QtdThr(nTipo,cChave,cTabela)
+Local aAreaAnt  := GetArea()
+Local aAreaSB2  := SB2->(GetArea())
+Local aAreaTRB  := {}
+Local aProdutos := {}
+Local aThreads  := {}
+Local cQuery    := ''
+Local cPesqOP   := ''
+Local cInicio   := ''
+Local cUltOP    := ''
+Local nRecnoTRB := 0
+Local nThread   := 0
+Local nX        := 0
+Local nInicio   := 0
+Local nRegProc  := 0
+Local nTotRegs  := 0
+Local nQuebra   := 0
+Local nTotThread:= 0
+Local cAliasSB2 := "SB2"
+Local cProdIni  := Space(TamSx3("B2_COD")[1])
+Local cProdFim  := Replicate("Z",TamSx3("B2_COD")[1])
+Local nThreads  := SuperGetMV('MV_M330THR',.F.,1)
+Local lHabCon330:= SuperGetMV('MV_M330CON',.F.,.F.)
+Local lExclu	:= SuperGetMV("MV_CUSTEXC",.F.,"N")  == "S"
+
+Default nTipo := 1
+Default cChave:= ''
+Default cTabela := "SB2"
+
+//Tratamento para forçar valor mínimo 1 em nThreads
+// Quando MV_M330THR está vazio, SuperGetMV retorna 0
+If nThreads < 1
+	nThreads := 1
+EndIf
+
+// Quebra por threads pela ordenacao Produto/Armazem (nTipo = 1) ou prepara por threads as transferencias de filiais (nTipo=9)
+If nTipo == 1 .or. nTipo == 9
+	If cTabela == "TRT" // reavaliar - bloco sem uso
+		cQuery := "SELECT TRT.TRB_FILIAL FILIAL, TRT.TRB_COD PRODUTO "
+		cQuery += "FROM "
+		cQuery += 		 cNomTRT	+ " TRT "
+		cQuery += "WHERE "
+		cQuery += 		"TRB_FILIAL = '" + cFilAnt	+ "' "
+		cQuery += 		"AND D_E_L_E_T_ = ' ' "
+		cQuery += " GROUP BY TRT.TRB_FILIAL, TRT.TRB_COD"
+		cQuery += 		"ORDER BY "
+		cQuery += 		"TRB_FILIAL, TRB_COD "
+	Else
+		//-- Define a string da query a ser processada
+		cQuery := "SELECT SB2.B2_FILIAL FILIAL, SB2.B2_COD PRODUTO"
+		cQuery += "FROM "
+		cQuery += 		 RetSqlName("SB2")	+ " SB2 "
+		cQuery += "WHERE "
+		cQuery += 		"B2_FILIAL = '" + xFilial("SB2")	+ "' AND "
+		cQuery += 		"B2_COD >= '" 	+ cProdIni 			+ "' AND "
+		cquery += 		"B2_COD <= '" 	+ cProdFim 			+ "' AND "
+		cQuery += 		"D_E_L_E_T_ = ' ' "
+		cQuery += "  GROUP BY SB2.B2_FILIAL, SB2.B2_COD"
+		cQuery += 		"ORDER BY "
+		cQuery += 		"B2_FILIAL, B2_COD "
+	EndIf
+	cQuery := ChangeQuery(cQuery)
+
+	//-- Verifica se o alias esta em uso
+	cAliasSB2 := GetNextAlias()
+	If Select( cAliasSB2 ) > 0
+		dbSelectArea( cAliasSB2 )
+		dbCloseArea()
+	EndIf
+
+	dbUseArea(.T.,"TOPCONN",TcGenQry(,,cQuery),cAliasSB2,.F.,.T.)
+
+	//-- Carrega Array aProdutos
+	Do While (cAliasSB2)->(!Eof())
+		aAdd(aProdutos,(cAliasSB2)->PRODUTO)
+		(cAliasSB2)->(dbSkip())
+	EndDo
+
+	//-- Verifica Limite Maximo de 30 Threads
+	If nThreads > 30
+		nThreads := 30
+	EndIf
+
+	If nTipo == 9 .And. lExclu
+		nThreads	:= 1
+	EndIf
+
+	//-- Analisa a quantidade de Threads X nRegistros
+	If Len(aProdutos) == 0
+		aThreads := {}
+	ElseIf Len(aProdutos) < nThreads
+		aThreads := ARRAY(1)			// Processa somente em uma thread
+	Else
+		aThreads := ARRAY(nThreads)		// Processa com o numero de threads informada
+	EndIf
+
+	//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+	//³ Calcula o registro original de cada thread e     ³
+	//³ aciona thread gerando arquivo de fila.           ³
+	//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+	For nX:=1 to Len(aThreads)
+
+		aThreads[nX]:={"","",1}
+
+		// Registro inicial para processamento
+		nInicio  := IIf( nX == 1 , 1 , aThreads[nX-1,3]+1 )
+
+		// Quantidade de registros a processar
+		nRegProc += IIf( nX == Len(aThreads) , Len(aProdutos) - nRegProc, Int(Len(aProdutos)/Len(aThreads)) )
+
+		aThreads[nX,1] := aProdutos[nInicio]
+		aThreads[nX,2] := aProdutos[nRegProc]
+		aThreads[nX,3] := nRegProc
+
+	Next nX
+
+	//-- Encerra cAliasSB2
+	dbSelectArea(cAliasSB2)
+	dbCloseArea()
+
+// Quebra de Threads pela Ordenacao do Custo Medio (Ordem 300)
+ElseIf nTipo == 2
+	aAreaTRB   := TRB->(GetArea())
+    // Calcula o Total de Registros a serem processados
+	dbSelectArea("TRB")
+	dbSetOrder(3)
+	nRecnoTRB := TRB->(Recno())
+	cPesqOP   := ''; cUltOP := ''; 	nTotRegs  := 0
+ 	Do While !Eof() .And. (cChave == DTOS(TRB->TRB_DTBASE)+TRB->TRB_SEQPRO+TRB->TRB_ORDEM+TRB->TRB_NIVEL+TRB->TRB_NIVSD3) .And. (!Empty(TRB->TRB_OP) .OR. (TRB->TRB_CF =="RE6" .OR. TRB->TRB_CF =="DE6"))
+		If !(AllTrim(cPesqOP)==AllTrim(TRB->TRB_OP))
+			nTotRegs++
+			cPesqOP := TRB->TRB_OP
+			cUltOP  := cPesqOP
+		EndIf
+		//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+		//³ Habilita Log via Conout para Analise                         ³
+		//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+		If lHabCon330
+			Conout("JOB: M330QTDTHR -> Registro TRB : " + STRZERO(TRB->(Recno()),10) + " | " + "Chave: " + DTOS(TRB->TRB_DTBASE)+TRB->TRB_SEQPRO+TRB->TRB_ORDEM+TRB->TRB_NIVEL+TRB->TRB_NIVSD3)
+		EndIf
+		dbSelectArea("TRB")
+ 		dbSkip()
+ 	EndDo
+
+	// Restaura o posicionamento do registro
+	dbSelectArea("TRB")
+ 	MsGoto(nRecnoTRB)
+
+	//-- Verifica Limite Maximo de 30 Threads
+	If nThreads > 30
+		nThreads := 30
+	EndIf
+
+	//-- Analisa a quantidade de Threads X nRegistros
+	If nTotRegs == 0
+		aThreads := {}
+	ElseIf nTotRegs <= nThreads
+		aThreads := ARRAY(nTotRegs)		// Se registros menor que numero de threads, processa threads com o numero de registros
+	Else
+		aThreads := ARRAY(nThreads)		// Processa com o numero de threads informada
+	EndIf
+
+	//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+	//³ Calcula o registro original de cada thread e     ³
+	//³ aciona thread gerando arquivo de fila.           ³
+	//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+	nTotThread := Len(aThreads)
+	nQuebra    := Int(nTotRegs/Len(aThreads))
+	cPesqOP    := ''; nRegProc := 0; nThread := 0
+	cInicio    := TRB->TRB_OP
+	nThread    := 1
+ 	Do While !Eof() .And. (cChave == DTOS(TRB->TRB_DTBASE)+TRB->TRB_SEQPRO+TRB->TRB_ORDEM+TRB->TRB_NIVEL+TRB->TRB_NIVSD3) .And. (!Empty(TRB->TRB_OP) .OR. (TRB->TRB_CF =="RE6" .OR. TRB->TRB_CF =="DE6"))
+		If !(AllTrim(cPesqOP)==AllTrim(TRB->TRB_OP))
+			nRegProc++
+    		If nRegProc==1
+				cInicio:= TRB->TRB_OP
+			EndIf
+			If  ( nThread<nTotThread  .And. nRegProc>=nQuebra) .Or. ;  	 		// Realiza a quebra por Threads
+				( nThread==nTotThread .And. AllTrim(TRB->TRB_OP)==AllTrim(cUltOP))	// Ultima Threada ser processada
+				aThreads[nThread] := {cInicio,TRB->TRB_OP,nRegProc}
+				nThread++
+				lReinicia:= .T.
+				nRegProc := 0
+			EndIf
+	 	   cPesqOP := TRB->TRB_OP
+		EndIf
+		//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+		//³ Habilita Log via Conout para Analise                         ³
+		//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+		If lHabCon330
+			Conout("JOB: M330QTDTHR -> Registro TRB : " + STRZERO(TRB->(Recno()),10) + " | " + "Chave: " + DTOS(TRB->TRB_DTBASE)+TRB->TRB_SEQPRO+TRB->TRB_ORDEM+TRB->TRB_NIVEL+TRB->TRB_NIVSD3)
+		EndIf
+		dbSelectArea("TRB")
+ 		dbSkip()
+ 	EndDo
+	RestArea(aAreaTRB)
+	aSize(aAreaTRB,0)
+	aAreaTRB := nil
+EndIf
+RestArea(aAreaSB2)
+aSize(aAreaSB2,0)
+aAreaSB2 := nil
+
+RestArea(aAreaAnt)
+aSize(aAreaAnt,0)
+aAreaAnt := nil
+
+aSize(aProdutos,0)
+aProdutos := nil
+
+Return aThreads
+
+/*/
+ÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜ
+±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±
+±±ÚÄÄÄÄÄÄÄÄÄÄÂÄÄÄÄÄÄÄÄÄÄÂÄÄÄÄÄÄÄÂÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÂÄÄÄÄÄÄÂÄÄÄÄÄÄÄÄÄÄ¿±±
+±±³Funcao    ³A330TJOB  ³ Autor ³ TOTVS S/A             ³ Data ³06.07.11  ³±±
+±±ÃÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÁÄÄÄÄÄÄÄÁÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÁÄÄÄÄÄÄÁÄÄÄÄÄÄÄÄÄÄ´±±
+±±³Descri‡ao ³Funcao utilizada para executar a Mult-Thread do processo    ³±±
+±±³          ³de ajuste dos movimentos de transferencia de filiais.       ³±±
+±±ÃÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´±±
+±±³Parametros³cEmp         - Empresa                                      ³±±
+±±³          ³cFil         - Filial                                       ³±±
+±±³          ³aThreads     - Dados enviados para processamento            ³±±
+±±³          ³cJobFile     - Nome do arquivo para controle do JOB         ³±±
+±±³          ³cThread      - Numero da Thread em execucao                 ³±±
+±±³          ³cNomTrb      - Nome fisico da tabela TRB		              ³±±
+±±³          ³cIndTrb1     - DESCONTINUADO				                  ³±±
+±±³          ³cIndTrb2     - DESCONTINUADO				                  ³±±
+±±³          ³cIndTrb3     - DESCONTINUADO				                  ³±±
+±±³          ³cIndTrb4     - DESCONTINUADO				                  ³±±
+±±³          ³cIndTrb5     - DESCONTINUADO				                  ³±±
+±±³          ³cIndTrb6     - DESCONTINUADO				                  ³±±
+±±³          ³cLocalCQ     - Codigo do Armazem de CQ                      ³±±
+±±³          ³nOrderFIFO   - Numero do Indice utilizado para o custo FIFO ³±±
+±±³          ³lExistProc   - Indica se utiliza Stored Procedures          ³±±
+±±³          |cDriver330   - DESCONTINUADO							      ³±±
+±±ÃÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´±±
+±±³ Uso      ³ MATA300                                                    ³±±
+±±ÀÄÄÄÄÄÄÄÄÄÄÁÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ±±
+±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±
+ßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßß
+/*/
+Function M330TJOB(cEmp,cFil,aThreads,cJobFile,cThread,cNomTrb,cIndTrb1,cIndTrb2,cIndTrb3,cIndTrb4,cIndTrb5,cIndTrb6,cLocalCQ,nOrderFIFO,lExistProc,lHabCon330,cThrJOB,cNomTR2)
+
+Local nHd1       := 0
+Local nx         := 0
+Local nz         := 0
+Local nRecnoBack := 0
+Local nRecnoRE5  := 0
+
+Local cSeek      := ""
+Local cNovaChave := ""
+Local cNovoNivel := ""
+Local cSeekRE5   := ""
+Local cSeekD7    := ""
+Local cFiltroTRB := ""
+
+Local aRecnosGrv := {}
+Local aRecnosSD3 := {}
+Local aChaveSeq  := {}
+
+Default lExistProc := .F.
+Default lHabCon330 := .F.
+
+If cThread <> '99'
+	// Apaga arquivo ja existente
+	If File(cJobFile)
+		fErase(cJobFile)
+	EndIf
+
+	// Criacao do arquivo de controle de jobs
+	nHd1 := MSFCreate(cJobFile)
+
+	// STATUS 1 - Iniciando execucao do Job
+	A330LckGlb("T"+cEmp+cFil+cThread)
+
+	// Seta job para empresa filial desejada
+	cFilant := cFil
+
+	// STATUS 2 - Conexao efetuada com sucesso
+	PutGlbValue("T"+cEmp+cFil+cThread, "2" )
+	A330ULckGlb("T"+cEmp+cFil+cThread)
+EndIf
+
+//Troca o Alias SB2 para a tabela alternativa
+If 'TR2' $ cNomTR2
+	A330AbreB2(cNomTR2)
+EndIf
+
+// Abre tabela em modo compartilhado
+dbUseArea(.T.,"TOPCONN",cNomTrb,"TRB",.T.)
+nZ := Len(GetTRBStru(2))
+For nX := 1 To nZ
+	dbSetIndex(cNomTrb +StrZero(nX,2))
+Next nX
+cFiltroTRB := "TRB_THREAD = "+ "'" +cThrJOB+ "' "
+dbSetFilter({|| &cFiltroTRB},cFiltroTRB)
+dbSetOrder(6)
+
+If cThread <> '99'
+	ConOut("[MATA330] "+dtoc(Date())+" "+Time()+" "+STR0005+" "+cJobFile) //"MATA330: Inicio do job de Transferencia de Filial"
+Else
+	ConOut("[MATA330] "+dtoc(Date())+" "+Time()+" "+STR0013+" "+cEmp+" "+cFil) //"MATA330: Inicio da Transferencia de Filial"
+EndIf
+// Pesquisa em notas de saida de transferencia
+dbSeek(cFil+"S"+"SD2"+aThreads[1],.T.)
+
+While  !KillApp() .And. TRB->(!Eof()) .And. TRB->(TRB_FILIAL+TRB_USATRA+TRB_ALIAS)==cFil+"SSD2" .And. TRB->TRB_COD <= aThreads[2]
+
+	//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+	//³ Habilita Log via Conout para Analise                         ³
+	//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+	If lHabCon330
+		Conout("JOB: M330TJOB -> REGISTRO TRB : " + STRZERO(TRB->(RECNO()),10) + " | " + "ALIAS: " + TRB->TRB_ALIAS)
+	EndIf
+
+	// Processar somente registros validos para transferencias
+	If Empty(TRB->TRB_FILTRA)
+		dbSelectArea("TRB")
+		dbSkip()
+		Loop
+	EndIf
+
+	// Array com registros a serem alterados
+	aRecnosGrv := {}
+	// Registro origem
+	nRecnoBack:=Recno()
+	// Chave de pesquisa
+	cSeek:=TRB->(TRB_FILTRA+"SD1"+TRB_DOC+TRB_SERIE+A330ConvIT(TRB_ITEM,'SD1'))
+	// Chave origem
+	aChaveSeq :={TRB->TRB_SEQPRO,TRB->TRB_ORDEM,TRB->TRB_NIVEL,TRB->TRB_NIVSD3,TRB->TRB_CHAVE,TRB->TRB_SEQ}
+	// Procura documento origem
+	dbSelectArea("TRB")
+	dbSetOrder(4) // TRB_FILIAL+TRB_ALIAS+TRB_DOC+TRB_SERIE+TRB_ITEM
+	If dbSeek(cSeek)
+		While TRB->(!Eof()) .And. TRB->(TRB_FILIAL+TRB_ALIAS+TRB_DOC+TRB_SERIE+A330ConvIT(TRB_ITEM,'SD1')) == cSeek
+			// Checa amarracao das filiais
+			If TRB->TRB_FILTRA == cFilant
+				aadd(aRecnosGrv,Recno())
+			EndIf
+			dbSkip()
+		EndDo
+		// Grava a ordem correta e a chave correta
+		TRB->(MsGoto(nRecnoBack))
+		If !TRB->(Eof())
+			// Muda filial para filial que recebeu o movimento / FILIAL DO SD1
+			cFilAnt:=TRB->TRB_FILTRA
+			// Monta nova chave
+			cNovaChave:=CriaVar("D3_OP",.F.)+"E"+DTOS(TRB->TRB_DTORIG)+TRB->TRB_SEQ
+			cNovoNivel:= IIf(nOrderFIFO==5,SubStr(TRB->TRB_NIVEL,1,2)+"w",StrTran(TRB->TRB_NIVEL,"x","w"))
+			Reclock("TRB",.F.)
+			Replace TRB_ORDEM With "300"
+			Replace TRB_CHAVE With cNovaChave+"00"
+			Replace TRB_NIVEL With cNovoNivel
+			TRB->(MsUnlock())
+			// Chave origem
+			aChaveSeq :={TRB->TRB_SEQPRO,TRB->TRB_ORDEM,TRB->TRB_NIVEL,TRB->TRB_NIVSD3,TRB->TRB_CHAVE,TRB->TRB_SEQ}
+			// Regrava arquivos com a sequencia igual a nota de origem
+			For nx:=1 to Len(aRecnosGrv)
+				// Array com registros a serem alterados relacionados a movimentos do SD3
+				aRecnosSD3 := {}
+				TRB->(dbGoto(aRecnosGrv[nx]))
+				// Altera registros
+				Reclock("TRB",.F.)
+				Replace	TRB_SEQPRO With aChaveSeq[1]
+				Replace	TRB_ORDEM  With aChaveSeq[2]
+				Replace	TRB_NIVEL  With IIf(nOrderFIFO==5,SubStr(TRB->TRB_NIVEL,1,2)+"x",aChaveSeq[3])
+				Replace	TRB_NIVSD3 With aChaveSeq[4]
+				Replace	TRB_CHAVE  With cNovaChave+"09"
+				Replace	TRB_SEQ    With aChaveSeq[6]
+				TRB->(MsUnlock())
+				// Chave de pesquisa
+				cSeekRE5 := TRB->TRB_FILIAL+"SD3"+TRB->TRB_SEQ
+				// Registro do SD1
+				nRecnoRE5:= TRB->TRB_RECNO
+				If nRecnoRE5 > 0
+					SD1->(MsGoto(nRecnoRE5))
+					If !Empty(TRB->TRB_OP)
+						// Checa se existem registros "amarrados" a este registro do SD1
+						// Checa movimentos do tipo RE5
+						dbSetOrder(2)
+						If TRB->(dbSeek(cSeekRE5))
+							While TRB->(!Eof()) .And. TRB->TRB_FILIAL+TRB->TRB_ALIAS+TRB_SEQ == cSeekRE5
+								If TRB->TRB_RECSD1 == nRecnoRE5
+									aadd(aRecnosSD3,Recno())
+								EndIf
+		        	   		TRB->(dbSkip())
+							End
+						EndIf
+               EndIf
+					// Checa movimentos de CQ
+					If SD1->D1_LOCAL == cLocalCQ .And. !Empty(SD1->D1_NUMCQ)
+						cSeekD7:=SD1->D1_NUMCQ+SD1->D1_COD+SD1->D1_LOCAL
+						dbSelectArea("SD7")
+						dbSetOrder(1)
+						dbSeek(xFilial("SD7")+cSeekD7,.F.)
+						While SD7->(!Eof()) .And. xFilial("SD7")+cSeekD7==SD7->(D7_FILIAL+D7_NUMERO+D7_PRODUTO+D7_LOCAL)
+							If SD7->D7_TIPO # 0 .And. SD7->D7_TIPO # 5 .And. SD7->D7_TIPO # 8
+								dbSelectArea("TRB")
+								TRB->(dbSetOrder(2))
+								TRB->(dbSeek(cSeekRE5+SD7->D7_NUMSEQ))
+								While TRB->(!Eof()) .And. cSeekRE5+SD7->D7_NUMSEQ == TRB->(TRB_FILIAL+TRB_ALIAS+TRB_SEQ)
+									aadd(aRecnosSD3,Recno())
+									TRB->(dbSkip())
+								End
+							EndIf
+							dbSelectarea("SD7")
+	           			SD7->(dbSkip())
+						End
+					EndIf
+				EndIf
+				dbSelectArea("TRB")
+				// Regrava arquivos com a sequencia igual a nota de origem
+				For nz:=1 to Len(aRecnosSD3)
+					dbGoto(aRecnosSD3[nz])
+					// Altera registros
+					Reclock("TRB",.F.)
+					Replace	TRB_SEQPRO With aChaveSeq[1]
+					Replace	TRB_ORDEM  With aChaveSeq[2]
+					Replace	TRB_NIVEL  With aChaveSeq[3]
+					Replace	TRB_NIVSD3 With aChaveSeq[4]
+					//Quando for RE5 adicionar "z" na chave para valorizar por ultimo
+					If TRB->TRB_CF == "RE5" .And. TRB->TRB_RECSD1 > 0
+						Replace	TRB_CHAVE	With cNovaChave+"09z"
+					Else
+						Replace	TRB_CHAVE	With cNovaChave+"09"
+					EndIf
+					Replace	TRB_SEQ    		With aChaveSeq[6]
+					TRB->(MsUnlock())
+				Next nz
+			Next nx
+			// Reposiciona registro
+			dbSelectArea("TRB")
+			MsGoto(nRecnoBack)
+		EndIf
+		// Reposiciona registro
+		dbSelectArea("TRB")
+		MsGoto(nRecnoBack)
+	Else
+		// Reposiciona registro
+		dbSelectArea("TRB")
+		MsGoto(nRecnoBack)
+		If !TRB->(Eof())
+			// Grava a ordem correta e a chave correta
+			Reclock("TRB",.F.)
+			Replace	TRB_NIVEL  With ""
+			Replace	TRB_NIVSD3 With ""
+			TRB->(MsUnlock())
+		EndIf
+	EndIf
+	//Restaura Filial
+	cFilAnt := cFil
+	// Reposiciona ordem
+	TRB->(dbSetOrder(6))
+	TRB->(dbSkip())
+End
+
+If cThread <> '99'
+	ConOut("[MATA330] "+dtoc(Date())+" "+Time()+" "+STR0006+" "+cJobFile) //"MATA330: Termino do job de Transferencia de Filial"
+
+	// STATUS 3 - Processamento efetuado com sucesso
+	A330LckGlb("T"+cEmp+cFil+cThread)
+	PutGlbValue("T"+cEmp+cFil+cThread,"3")
+	A330ULckGlb("T"+cEmp+cFil+cThread)
+
+	// Fecha arquivo de controle de semaforo
+	fClose(nHd1)
+
+	// Apaga arquivo de semaforo
+	If File(cJobFile)
+		fErase(cJobFile)
+	EndIf
+
+	// Fecha a tabela de trabalho
+	If Select("TRB") > 0
+		TRB->(dbCloseArea())
+	EndIf
+Else
+	ConOut("[MATA330] "+dtoc(Date())+" "+Time()+" "+STR0014+" "+cEmp+" "+cFil) //"MATA330: Termino da Transferencia de Filial"
+EndIf
+
+Return
+
+/*/
+ÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜ
+±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±
+±±ÚÄÄÄÄÄÄÄÄÄÄÂÄÄÄÄÄÄÄÄÄÄÂÄÄÄÄÄÄÄÂÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÂÄÄÄÄÄÄÂÄÄÄÄÄÄÄÄÄÄ¿±±
+±±³Funcao    |M330JobCM | Autor ³ TOTVS S/A             ³ Data ³02.09.11  ³±±
+±±ÃÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÁÄÄÄÄÄÄÄÁÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÁÄÄÄÄÄÄÁÄÄÄÄÄÄÄÄÄÄ´±±
+±±³Descri‡…o ³Funcao utilizada para executar a Mult-Thread para o         ³±±
+±±³          ³recalculo dos movimento de ordem 100/300/500.               ³±±
+±±ÃÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´±±
+±±³Parametros³cEmp       - Codido da Empresa                              ³±±
+±±³          ³cFil       - Codigo da Filial                               ³±±
+±±³          ³cOrdem     - Codigo da Ordem a ser Processada               ³±±
+±±³          ³aThreads   - Dados enviados para processamento              ³±±
+±±³          ³cJobFile   - Nome do arquivo para controle do JOB           ³±±
+±±³          ³cThread    - Numero da Thread em execucao                   ³±±
+±±³          ³aArqs      - Array com nome das tabelas TRB, TRC, TRT e TRX ³±±
+±±³          ³lCstPart   - Calcula Custo em Partes                        ³±±
+±±³          ³aRegraCP   - Array com a Regra do Custo Em Partes           ³±±
+±±³          ³lCusRep    - Calcula Custo de Reposicao                     ³±±
+±±³          ³cPaisLoc   - Codigo do Pais                                 ³±±
+±±³          ³lPCusFil   - Utiliza Custo Por Filial                       ³±±
+±±³          ³lPCusEmp   - Utiliza Custo Por Empresa                      ³±±
+±±³          ³aPE        - Utiliza o ponto de Entrada MA330D1             ³±±
+±±³          |dMVUlMes   - Data do parametro MV_ULMES                     ³±±
+±±³          |cGlbNum    - Nome da Variavel de controle do campo _NUMSEQ  ³±±
+±±³          |a330ParamZX- Perguntas da Rotina MATA330                    ³±±
+±±³          |lExistProc - Utiliza Stored Procedures para Calculo         ³±±
+±±³          |cLocalCQ   - Codigo do armazem de CQ                        ³±±
+±±³          |cDepTran   - Armazem de Transito                            ³±±
+±±³          |cChave     - Chave para posicionamento no TRB               ³±±
+±±³          |nProdPr0   - Tipo de Apropriacao para Producao              ³±±
+±±³          |lIntMntAt  - Integra com Manutencao de Ativos               ³±±
+±±³          |cDriver330 - DESCONTINUADO							      ³±±
+±±ÃÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´±±
+±±³ Uso      ³ MATA330                                                    ³±±
+±±ÀÄÄÄÄÄÄÄÄÄÄÁÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ±±
+±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±
+ßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßß
+/*/
+Function M330JobCM(cEmp,cFil,cOrdem,aThreads,cJobFile,cThread,aArqs,lCstPart,aRegraCP,lCusRep,cPaisLoc,lPCusFil,lPCusEmp,aPE,dMVUlMes,a330ParamZX,lExistProc,aLocais,cChave,nProdProp,lIntMntAt,oListaTrf,cSeqCalc,cListaFil,cThreadID,oJourneyLog, aUser, cpKeyRegCT)
+
+LOCAL nX         := 0
+LOCAL nZ         := 0
+LOCAL nHd1       := 0
+LOCAL nTamDoc    := 0
+LOCAL nQuantOriD7:= 0
+LOCAL nPropPR0   := 1
+LOCAL nPropPR0Rp := 1
+
+LOCAL lTransito  := .F.
+LOCAL lIntCusTMS := .F.
+LOCAL lHabCon330 := .F.
+LOCAL lM330JCM   := .F.
+LOCAL lVer67A    := .F.
+LOCAL lVer67B    := .F.
+LOCAL lOPEncParc := .F.
+
+LOCAL cSeekD7    := ""
+LOCAL cSeekSD3   := ""
+LOCAL cNumSeqOrig:= ""
+LOCAL cAproPri   := ""
+LOCAL cFiltroTRB := ""
+
+LOCAL aRetPartes := {}
+LOCAL aBackCusto := {}
+LOCAL aImpCusto  := {}
+LOCAL aRetAPAtu  := {}
+LOCAL aRetPUnit  := {}
+
+LOCAL aRet       := {0,0,0,0,0}
+LOCAL aCM        := {0,0,0,0,0}
+LOCAL aCMRep     := {0,0,0,0,0}
+LOCAL aCMSD1     := {0,0,0,0,0}
+LOCAL aCusto     := {0,0,0,0,0}
+LOCAL aCMPartes  := {0,0,0,0,0}
+LOCAL aCMSD1Rep  := {0,0,0,0,0}
+LOCAL aAprRep    := {0,0,0,0,0}
+LOCAL aCustoRep  := {0,0,0,0,0}
+LOCAL aApropria  := {0,0,0,0,0}
+LOCAL aAprInd    := {0,0,0,0,0}
+LOCAL aAprDir    := {0,0,0,0,0}
+
+LOCAL cNomTRB    := aArqs[1]
+LOCAL cNomTRC    := aArqs[2]
+LOCAL cNomTRT	 := aArqs[3]
+LOCAL cNomTRX	 := aArqs[4]
+Local cNomTR2    := aArqs[5]
+
+LOCAL nPartes    := Len(aRegraCP)+1
+LOCAL nOrdem     := IIf(cOrdem=="300",3,1)
+LOCAL cFilBack   := cFil
+LOCAL aRetCPUs	 := Nil
+
+LOCAL lMA330D1   := aPE[1]
+LOCAL lM330CD2   := aPE[2]
+LOCAL lMA330D2   := aPE[3]
+LOCAL lM330CD1   := aPE[4]
+LOCAL lMA330D3   := aPE[5]
+LOCAL lMA330C3   := aPE[6]
+LOCAL lMA330P3   := aPE[7]
+
+LOCAL cLocalCQ   := aLocais[1]
+LOCAL cDepTran   := aLocais[2]
+
+LOCAL aRegsRE5		:={}
+LOCAL cLocTran
+Local cKeySD3TRB	:= ""
+Local lLanctoOn		:= IIf(a330ParamZX[10] == 1,.T.,.F.)
+LOCAL lLct667669	:=.F.
+LOCAL lA330CDEV 	:= ExistBlock("A330CDEV")
+Local cKeyListaTRF
+Local nSD3RecDE4 as numeric
+Local oQryRecDE4 as object
+Local cQuery        := ''
+
+PRIVATE dInicio    := dMVUlMes+1
+PRIVATE lCusFil    := lPCusFil
+PRIVATE lCusEmp    := lPCusEmp
+PRIVATE nTamArrCus := 5
+PRIVATE cSeqEmp    := cSeqCalc
+PRIVATE cKeyRegCT  := cpKeyRegCT
+
+//- Objeto para Bulk
+Private oBulk
+
+STATIC cMoeda330C
+Static __lLibVer := Nil
+
+If __lLibVer == Nil
+	__lLibVer := FWLibVersion() >= "20211116"
+EndIf
+
+cUserName := aUser[1]
+__cUserID := aUser[2]
+
+//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+//³	aListaTrf :													   |
+//|     [nX,1] Filial origem        [nX,2] Filial destino          |
+//|     [nX,3] Documento            [nX,4] Serie                   |
+//|     [nX,5] Codigo do produto    [nX,6] Quantidade              |
+//|     [nX,7] Custo unitario       [nX,8] Custo Movimento         |
+//|     [nX,9] Custo em partes                                     |
+//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+
+// Apaga arquivo ja existente
+If File(cJobFile)
+	fErase(cJobFile)
+EndIf
+
+// Criacao do arquivo de controle de jobs
+nHd1 := MSFCreate(cJobFile)
+
+// STATUS 1 - Iniciando execucao do Job
+A330LckGlb("M"+cEmp+cFil+cThread)
+
+// Seta job para empresa filial desejada
+cFilant := cFil
+
+// STATUS 2 - Conexao efetuada com sucesso
+PutGlbValue("M"+cEmp+cFil+cThread, "2" )
+A330ULckGlb("M"+cEmp+cFil+cThread)
+
+cLocTran := GetMvNNR('MV_LOCTRAN','95')
+
+lM330JCM := !Empty(SuperGetMv("MV_M330JCM" ,.F.,""))
+
+// Moedas para calculo do custo medio - Sempre processa moeda 1
+cMoeda330C := SuperGetMV('MV_MOEDACM',.F.,"2345")
+
+// Tamanho do campo D3_DOC
+nTamDoc    := TamSX3("D3_DOC")[1]
+
+// Indica de deve habilitar o Log de Analise
+lHabCon330:= SuperGetMV('MV_M330CON',.F.,.F.)
+
+// Verifica se os LPs 67A e 67B estao configurados
+If lLanctoOn
+	lVer67A	:= VerPadrao("67A") // Movimento de Estoques - Rateio da Solicitacao ao Armazem
+	lVer67B	:= VerPadrao("67B") // Movimento de Estoques - Rateio da Solicitacao ao Armazem - Estorno
+EndIf
+
+// Log de Processamento
+ConOut("[MATA330] "+dtoc(Date())+" "+Time()+" "+STR0007+" "+cOrdem+" - "+STR0009+" "+cThread) //"MATA330: Processando Ordem ### - Thread : ### "
+
+//Troca o Alias SB2 para a tabela alternativa
+If 'TR2' $ cNomTR2
+	A330AbreB2(cNomTR2)
+EndIf
+
+// Abre a tabela de trabalho de Saldos Por OP (Tabela TRX)
+dbUseArea( .T.,"TOPCONN",cNomTRX,"TRX",.T.)
+nZ := Len(GetTRXStru(2))
+For nX := 1 To nZ
+	dbSetIndex(cNomTRX +StrZero(nX,2))
+Next nX
+dbSetOrder(1)
+dbGoTop()
+
+// Abre a tabela de trabalho de contabilização (Tabela TRC)
+dbUseArea( .T.,"TOPCONN",cNomTRC,"TRC",.T.)
+nZ := Len(GetTRStru(2))
+For nX := 1 To nZ
+	dbSetIndex(cNomTRC +StrZero(nX,2))
+Next nX
+
+dbSetOrder(1)
+dbGoTop()
+
+// Abre a tabela de trabalho para Custo Unificado (Tabela TRT)
+If lCusFil .Or. lCusEmp
+	dbUseArea( .T.,"TOPCONN",cNomTRT,"TRT",.T.)
+	nZ := Len(GetTRTStru(NIL,NIL,2))
+	For nX := 1 To nZ
+		dbSetIndex(cNomTRT +StrZero(nX,2))
+	Next nX
+	dbSetOrder(1)
+EndIf
+
+// Abre a tabela de trabalho dos movimentos a serem processados TRB
+dbUseArea(.T.,"TOPCONN",cNomTRB,"TRB",.T.)
+nZ := Len(GetTRBStru(2))
+For nX := 1 To nZ
+	dbSetIndex(cNomTRB +StrZero(nX,2))
+Next nX
+cFiltroTRB := "TRB_THREAD = "+ "'" +cThreadID+ "' "
+dbSetFilter({|| &cFiltroTRB},cFiltroTRB)
+dbSetOrder(nOrdem)
+
+// Posiciona no registro inicial para processamento
+If cOrdem == "300"
+	dbSeek(cChave+aThreads[1],.T.)
+Else
+	dbSeek(cFil+cOrdem+aThreads[1],.T.) //"TRB_FILIAL+TRB_ORDEM+TRB_COD+TRB_NIVEL+TRB_NIVSD3+TRB_CHAVE+TRB_SEQ"
+EndIf
+
+While !KillApp() .And. !Eof() .And. ;
+                IIf(cOrdem == "300", cChave==TRB->(DTOS(TRB_DTBASE)+TRB_SEQPRO+TRB_ORDEM+TRB_NIVEL+TRB_NIVSD3) .And. TRB->TRB_OP <= aThreads[2],;
+                                      cFil+cOrdem==TRB->(TRB_FILIAL+TRB_ORDEM) .And. TRB->TRB_COD <= aThreads[2])
+
+	//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+	//³ Habilita Log via Conout para Analise                         ³
+	//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+	If lHabCon330
+		Conout("CT " + cThread + " | ORDEM: " + TRB->TRB_ORDEM + " | " + "ALIAS: " + TRB->TRB_ALIAS + " | " + "RECNO : " + STRZERO(TRB->(RECNO()),10) + " | PRODUTO: " + TRB->TRB_COD )
+	EndIf
+	// Altera filial corrente
+	cFilAnt:= TRB->TRB_FILIAL
+
+	If TRB->TRB_ALIAS == "SD1"
+
+		dbSelectArea("SD1")
+		dbGoto(TRB->TRB_RECNO)
+		GravaSeq("SD1")
+
+		//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+		//³ Posiciona no SB1 para formulas de lancamento contabil        ³
+		//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+		If lLanctoOn
+			dbSelectArea("SB1")
+			MsSeek(xFilial("SB1")+SD1->D1_COD)
+		EndIf
+
+		//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+		//³ Posiciona no SF4 - TES                                       ³
+		//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+		dbSelectArea("SF4")
+		MsSeek(xFilial("SF4")+SD1->D1_TES)
+		dbSelectArea("SD1")
+
+		If SF4->F4_PODER3 == "D"
+			If TRB->TRB_RECSD1 > 0
+				SD3->(dbGoto(TRB->TRB_RECSD1))
+				If a330ParamZX[04] == 1
+					GravaSeq("SD3")
+				EndIf
+			EndIf
+			//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+			//³ Nao considerar o custo de uma entrada por devolucao ³
+			//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+			If SD1->D1_TIPO == "D" .And. SF4->F4_DEVZERO == "2"
+				aRet := {{0,0,0,0,0},{0,0,0,0,0},{0,0,0,0,0},{0,0,0,0,0}}
+			Else
+				// Se nao for transferencia de filiais obtem custo pelo tipo de movimento
+				If !A330RecTrf(aRet,oListaTrf,.F.,lCstPart,aRegraCP)
+					aRet := A330PegaSB6("SD1",.F.,"330",lCstPart,nPartes,lCusRep)
+				EndIf
+			EndIf
+			aCM        := ACLONE(aRet[1])
+			aCMSD1     := ACLONE(aRet[1])
+			aRetPartes := ACLONE(aRet[3])
+			If lCusRep
+				aCMRep := ACLONE(aRet[4])
+			EndIf
+			aRet       := GravaCusD1(aCm,"D",NIL,"330",lCstPart,aRegraCP,ACLONE(aRetPartes),1,.F.,lCusRep,ACLONE(aCMRep))
+			aCusto     := ACLONE(aRet[1])
+			aRetPartes := ACLONE(aRet[3])
+			If lCusRep
+				aCMRep := ACLONE(aRet[4])
+			EndIf
+
+			//Entrada para OP, independente de poder de terceiros
+			If TRB->TRB_RECSD1 > 0 .And. a330ParamZX[04] == 1
+				Aadd(aRegsRE5,{TRB->TRB_RECNO, TRB->TRB_RECSD1,aRetPartes})
+			EndIf
+
+			//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+			//³ Acerta custo no SD3 caso necessario - Custo de RE5           ³
+			//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+			If TRB->TRB_RECSD1 > 0 .And. a330ParamZX[04] == 1
+				aRet:=GravaCusD3(aCM,.T.,NIL,"330",NIL,lCstPart,aRegraCP,aRetPartes,.F.,1,lCusRep,aCMRep,.T.)
+				SD3->(MsUnlock())
+			EndIf
+			dbSelectArea("SD1")
+
+			//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+			//³ Atualiza o saldo final (VFIM) com os dados do SD1            ³
+			//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+			B2FimComD1(aCusto,NIL,NIL,lCstPart,aRetPartes,lCusRep)
+			TTFimComD1(aCusto,ACLONE(aRetPartes),cFilAnt,lCstPart)
+
+			//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+			//³ Ponto de Entrada MA330D1                                     ³
+			//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+			If lMA330D1
+				ExecBlock("MA330D1",.F.,.F.)
+			EndIf
+
+			//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+			//³ Acerta custo de CQ - Controle de Qualidade                   ³
+			//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+			If SD1->D1_LOCAL == cLocalCQ .And.!Empty(SD1->D1_NUMCQ) .And. !(SD1->D1_TIPO $ "I|C|P")
+				//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+				//³ Calcula o Custo em Partes Unitario                       ³
+				//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+				If lCstPart
+					dbSelectArea("SD1")
+					aCMPartes := PegaCMPFim("D1_CP",lCstPart,nPartes,SD1->D1_QUANT)
+				EndIf
+				cSeekD7:=SD1->D1_NUMCQ+SD1->D1_COD+SD1->D1_LOCAL
+				dbSelectArea("SD7")
+				dbSetOrder(1)
+				dbSeek(xFilial("SD7")+cSeekD7,.F.)
+				While !Eof() .And. xFilial("SD7")+cSeekD7==D7_FILIAL+D7_NUMERO+D7_PRODUTO+D7_LOCAL
+					If D7_TIPO # 0 .And. D7_TIPO # 5 .And. D7_TIPO # 8
+						aCM    := PegaCMD1()
+						If lCusRep
+							aCMRep := IIf(lCusRep,PegaCMD1(Nil,lCusRep),{0,0,0,0,0,})
+						EndIf
+						dbSelectArea("SD3")
+						dbSetOrder(2)
+						dbSeek(cSeekSD3:=xFilial("SD3")+PadR(SD7->D7_NUMERO,nTamDoc)+SD7->D7_PRODUTO)
+						While !Eof() .And. cSeekSD3 == D3_FILIAL+D3_DOC+D3_COD
+							If (D3_NUMSEQ == SD7->D7_NUMSEQ) .And. QtdComp(SD3->D3_QUANT) # QtdComp(0)
+								For nX:=1 to Len(aCM)
+									aCMSD1[nX]	:=aCM[nX]*SD3->D3_QUANT
+									If lCusRep
+										aCMSD1Rep[nX] := IIf(lCusRep,aCMRep[nX]*SD3->D3_QUANT,{0,0,0,0,0})
+									EndIf
+								Next nx
+								aRet:=GravaCusD3(aCMSD1,.T.,NIL,"330",NIL,lCstPart,aRegraCP,aClone(aCMPartes),.F.,SD3->D3_QUANT,lCusRep,aCMSD1Rep)
+								SD3->(MsUnlock())
+							EndIf
+							dbSkip()
+						End
+					EndIf
+					dbSelectArea("SD7")
+					dbSkip()
+				EndDo
+			EndIf
+			dbSelectArea("SD1")
+
+			//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+			//³ Gera o lancamento no arquivo de prova                        ³
+			//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+			A330DET(SD1->D1_SEQCALC,"682","MATA330","SD1",,a330ParamZX)
+
+			dbSelectArea("TRB")
+			dbSetOrder(nOrdem)
+			dbSkip()
+			Loop
+		EndIf
+
+		If D1_TIPO != "D"
+
+			// Se nao for transferencia de filiais obtem custo pelo tipo de movimento
+			If !A330RecTrf(aRet,oListaTrf,.F.,lCstPart,aRegraCP)
+
+				aCusto := {SD1->D1_CUSTO,SD1->D1_CUSTO2,SD1->D1_CUSTO3,SD1->D1_CUSTO4,SD1->D1_CUSTO5}
+
+				//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+				//³ Atualiza os campos de Custo de Reposicao                       ³
+				//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+				If lCusRep
+					RecLock("SD1",.F.)
+					SD1->D1_CUSRP1 := aCusto[1]
+					SD1->D1_CUSRP2 := aCusto[2]
+					SD1->D1_CUSRP3 := aCusto[3]
+					SD1->D1_CUSRP4 := aCusto[4]
+					SD1->D1_CUSRP5 := aCusto[5]
+					SD1->(MsUnLock())
+					If lCusRep
+						aCMRep := aCusto
+					EndIf
+				EndIf
+
+				//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+				//³ M330CD1 - Ponto de Entrada para manipulacao do Custo em Partes ³
+				//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+				If lM330CD1 .And. lCstPart
+					aRetCPUs := ExecBlock("M330CD1",.F.,.F.,{lCstPart,aRegraCP,aCusto})
+					If Valtype(aRetCPUs) == "A" .And. Len(aRetCPUs) > 0
+						aRetPartes := aRetCPUs
+					EndIf
+				EndIf
+
+				If lCstPart
+					//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+					//³ Grava o custo em partes no arquivo de movimento              ³
+					//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+					// ATENCAO este trecho é de movimento da SD1 e é diferente do trecho abaixo de transferencia de filiais
+					// os parametros aqui devem ser NIL na posição 6 ou o retorno do PE Acima é NIL caso não use e deve ser a qtde da SD1 na posição 7.
+					aRetPartes:=GravaCusCP(lCstPart,aRegraCP,aCusto,"SD1",SD1->D1_COD,aRetCPUs, SD1->D1_QUANT,NIL,aCusto)
+		        EndIf
+
+				//Entrada para OP, independente de poder de terceiros
+				 If TRB->TRB_RECSD1 > 0 .And. a330ParamZX[04] == 1
+					Aadd(aRegsRE5,{TRB->TRB_RECNO, TRB->TRB_RECSD1,aRetPartes})
+				 EndIf
+
+				//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+				//³ Acerta custo no SD3 caso necessario - Custo de RE5           ³
+				//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+				If TRB->TRB_RECSD1 > 0
+					SD3->(dbGoto(TRB->TRB_RECSD1))
+					If a330ParamZX[04] == 1
+						GravaSeq("SD3")
+						aRet:=GravaCusD3(aCusto,.T.,NIL,"330",NIL,lCstPart,aRegraCP,aRetPartes,.F.,,lCusRep,aCMRep,.T.)
+						SD3->(MsUnlock())
+					EndIf
+        		EndIf
+
+				//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+				//³ Acerta custo de CQ - Controle de Qualidade                   ³
+				//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+				If SD1->D1_LOCAL == cLocalCQ .And. !Empty(SD1->D1_NUMCQ) .And. !(SD1->D1_TIPO $ "I|C|P")
+					//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+					//³ Calcula o Custo em Partes Unitario                       ³
+					//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+					If lCstPart
+						dbSelectArea("SD1")
+						aCMPartes := PegaCMPFim("D1_CP",lCstPart,nPartes,SD1->D1_QUANT)
+					EndIf
+					cSeekD7:=SD1->D1_NUMCQ+SD1->D1_COD+SD1->D1_LOCAL
+					dbSelectArea("SD7")
+					dbSetOrder(1)
+					dbSeek(xFilial("SD7")+cSeekD7,.F.)
+					While !Eof() .And. xFilial("SD7")+cSeekD7==D7_FILIAL+D7_NUMERO+D7_PRODUTO+D7_LOCAL
+						If D7_TIPO # 0 .And. D7_TIPO # 5 .And. D7_TIPO # 8
+							aCM    := PegaCMD1()
+							aCMSD1 := ACLONE(aCM)
+							If lCusRep
+								aCMRep := IIf(lCusRep,PegaCMD1(Nil,lCusRep),{0,0,0,0,0,})
+							EndIf
+							dbSelectArea("SD3")
+							dbSetOrder(2)
+							dbSeek(cSeekSD3:=xFilial("SD3")+PadR(SD7->D7_NUMERO,nTamDoc)+SD7->D7_PRODUTO)
+							While !Eof() .And. cSeekSD3 == D3_FILIAL+D3_DOC+D3_COD
+								If (D3_NUMSEQ == SD7->D7_NUMSEQ) .And. QtdComp(SD3->D3_QUANT) # QtdComp(0)
+									For nx:=1 to Len(aCM)
+										aCMSD1[nx]	:=aCM[nx]*SD3->D3_QUANT
+										If lCusRep
+											aCMSD1Rep[nX] := IIf(lCusRep,aCMRep[nx]*SD3->D3_QUANT,{0,0,0,0,0})
+										EndIf
+									Next nx
+									aRet:=GravaCusD3(aCMSD1,.T.,NIL,"330",NIL,lCstPart,aRegraCP,aClone(aCMPartes),.F.,SD3->D3_QUANT,lCusRep,aCMSD1Rep)
+									SD3->(MsUnlock())
+								EndIf
+								dbSkip()
+							End
+						EndIf
+						dbSelectArea("SD7")
+						dbSkip()
+					EndDo
+				EndIf
+				dbSelectArea("SD1")
+
+        	Else
+
+				//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+				//³ Grava o custo de transferencia corrigido no SD1              |
+				//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+				aCusto    := ACLONE(aRet[1])
+				aRetPartes:= ACLONE(aRet[3])
+				If lCusRep
+					aCMRep:= ACLONE(aRet[4])
+				EndIf
+				Reclock("SD1",.F.)
+				For nx:=1 to Len(aCusto)
+					If SF4->F4_TRFICST == '1'
+						If nx == 1
+							aCusto[nx] := aCusto[nx]+SD1->D1_ICMSRET
+						Else
+							aCusto[nx] := aCusto[nx]+xMoeda(SD1->D1_ICMSRET,1,nx,SD1->D1_DTDIGIT)
+						EndIf
+					EndIf
+					Fieldput(Fieldpos("D1_CUSTO"+If(nx == 1,"",Str(nx,1,0))),aCusto[nx])
+					If lCusRep
+						Fieldput(Fieldpos("D1_CUSRP"+Str(nx,1,0)),aCMRep[nx])
+					EndIf
+				Next nx
+				SD1->(MsUnlock())
+
+				//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+				//³ Grava o custo de movimentos de Documento em trânsito provenientes de Trans. Fil.   |
+				//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+
+				M330DocTran(aCusto,NIL,lCstPart,aRegraCP,aCMPartes,lIntCusTMS,lCusRep,aCMRep,lCusFil,lCusEmp,aRetPartes,cLocTran)
+
+				//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+				//³ M330CD1 - Ponto de Entrada para manipulacao do Custo em Partes ³
+				//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+				If lM330CD1 .And. lCstPart
+					aRetCPUs := ExecBlock("M330CD1",.F.,.F.,{lCstPart,aRegraCP,aCusto})
+					If Valtype(aRetCPUs) == "A" .And. Len(aRetCPUs) > 0
+						aRetPartes := aRetCPUs
+					EndIf
+				EndIf
+
+				If lCstPart
+					//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+					//³ Grava o custo em partes no arquivo de movimento              ³
+					//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+
+					// ATENCAO Este trecho é diferente do trecho acima e os parametros devem ser aretpartes na posição 6
+					// e fixo 1 na posição 7, cenario de tratamento para transferencia de filiais.
+					aRetPartes:=GravaCusCP(lCstPart,aRegraCP,aCusto,"SD1",SD1->D1_COD,aRetPartes,1,NIL,aCusto)
+		        EndIf
+
+
+				//Entrada para OP, independente de poder de terceiros
+				 If TRB->TRB_RECSD1 > 0 .And. a330ParamZX[04] == 1
+					Aadd(aRegsRE5,{TRB->TRB_RECNO, TRB->TRB_RECSD1,aRetPartes})
+				 EndIf
+
+				//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+				//³ Acerta custo no SD3 caso necessario - Custo de RE5           ³
+				//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+				If TRB->TRB_RECSD1 > 0
+					SD3->(dbGoto(TRB->TRB_RECSD1))
+					If a330ParamZX[04] == 1
+						GravaSeq("SD3")
+						aRet:=GravaCusD3(aCusto,.T.,NIL,"330",NIL,lCstPart,aRegraCP,aRetPartes,lIntCusTMS,,lCusRep,aCMRep)
+						SD3->(MsUnlock())
+					EndIf
+        		EndIf
+
+				//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+				//³ Acerta custo de CQ - Controle de Qualidade                   ³
+				//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+				If SD1->D1_LOCAL == cLocalCQ .And.!Empty(SD1->D1_NUMCQ) .And. !(SD1->D1_TIPO $ "I|C|P")
+					//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+					//³ Calcula o Custo em Partes Unitario                       ³
+					//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+					If lCstPart
+						dbSelectArea("SD1")
+						aCMPartes := PegaCMPFim("D1_CP",lCstPart,nPartes,SD1->D1_QUANT)
+					EndIf
+					cSeekD7:=SD1->D1_NUMCQ+SD1->D1_COD+SD1->D1_LOCAL
+					dbSelectArea("SD7")
+					dbSetOrder(1)
+					dbSeek(xFilial("SD7")+cSeekD7,.F.)
+					While !Eof() .And. xFilial("SD7")+cSeekD7==D7_FILIAL+D7_NUMERO+D7_PRODUTO+D7_LOCAL
+						If D7_TIPO # 0 .And. D7_TIPO # 5 .And. D7_TIPO # 8
+							aCM    := PegaCMD1()
+							aCMSD1 := ACLONE(aCM)
+							If lCusRep
+								aCMRep := IIf(lCusRep,PegaCMD1(Nil,lCusRep),{0,0,0,0,0,})
+							EndIf
+							dbSelectArea("SD3")
+							dbSetOrder(2)
+							dbSeek(cSeekSD3:=xFilial("SD3")+PadR(SD7->D7_NUMERO,nTamDoc)+SD7->D7_PRODUTO)
+							While !Eof() .And. cSeekSD3 == D3_FILIAL+D3_DOC+D3_COD
+								If (D3_NUMSEQ == SD7->D7_NUMSEQ) .And. QtdComp(SD3->D3_QUANT) # QtdComp(0)
+									For nx:=1 to Len(aCM)
+										aCMSD1[nx]	:=aCM[nx]*SD3->D3_QUANT
+										If lCusRep
+											aCMSD1Rep[nX] := IIf(lCusRep,aCMRep[nx]*SD3->D3_QUANT,{0,0,0,0,0})
+										EndIf
+									Next nx
+									aRet:=GravaCusD3(aCMSD1,.T.,NIL,"330",NIL,lCstPart,aRegraCP,aClone(aCMPartes),lIntCusTMS,SD3->D3_QUANT,lCusRep,aCMSD1Rep)
+									SD3->(MsUnlock())
+								EndIf
+								dbSkip()
+							End
+						EndIf
+						dbSelectArea("SD7")
+						dbSkip()
+					EndDo
+				EndIf
+			EndIf
+
+			//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+			//³ Atualiza o saldo final (VFIM) com os dados do SD1            ³
+			//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+			B2FimComD1(NIL,NIL,NIL,lCstPart,aRetPartes,lCusRep)
+			TTFimComD1(NIL,ACLONE(aRetPartes),cFilAnt,lCstPart)
+
+			//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+			//³ Ponto de Entrada MA330D1                                     ³
+			//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+			If lMA330D1
+				ExecBlock("MA330D1",.F.,.F.)
+			EndIf
+
+			//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+			//³ Acerta o Custo de Poder de Terceiros                         |
+			//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+			If SF4->F4_PODER3 == "R"
+				A330GravaSB6("SD1",aCusto,NIL,NIL,lCstPart,aRegraCP,ACLONE(aRetPartes))
+			EndIf
+
+			//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+			//³ Gera o lancamento no arquivo de prova                        ³
+			//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+			A330DET(SD1->D1_SEQCALC,"681","MATA330","SD1",,a330ParamZX)
+
+			SD1->(MsUnlock())
+
+		Else
+
+			If TRB->TRB_RECTRB > 0
+				SD3->(dbGoto(TRB->TRB_RECTRB))
+				If a330ParamZX[04] == 1
+					GravaSeq("SD3")
+				EndIf
+			EndIf
+			//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+			//³ Pega os custos medios finais                                 ³
+			//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+			//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+			//³ Nao considerar o custo de uma entrada por devolucao          ³
+			//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+			If SD1->D1_TIPO == "D" .And. SF4->F4_DEVZERO == "2"
+				aRet := {{0,0,0,0,0},{0,0,0,0,0},{0,0,0,0,0},{0,0,0,0,0}}
+			Else
+				aRet := PegaCmDev(.F.,SD1->D1_NFORI,SD1->D1_SERIORI,SD1->D1_COD,SD1->D1_LOCAL,SD1->D1_QUANT,.T.,"330",NIL,NIL,lCusFil .Or. lCusEmp,lCstPart,nPartes,,lCusRep,IF(cPaisLoc <>"BRA",AllTrim(SD1->D1_ESPECIE)=="NCC",.F.))
+			EndIf
+			aCM       := ACLONE(aRet[1])
+			aRetPartes:= ACLONE(aRet[3])
+			If lCusRep
+				aCMRep:= ACLONE(aRet[4])
+			EndIf
+			//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+			//³ Grava o custo da nota fiscal de devolucao                    ³
+			//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+			aRet      := GravaCusD1(aCM,SD1->D1_TIPO,NIL,"330",lCstPart,aRegraCP,ACLONE(aRetPartes),SD1->D1_QUANT,.F.,lCusRep,aCMRep)
+			aCusto    := ACLONE(aRet[1])
+			aRetPartes:= ACLONE(aRet[3])
+			If lCusRep
+				aCMRep    := ACLONE(aRet[4])
+			EndIf
+
+			//Entrada para OP, independente de poder de terceiros
+			If TRB->TRB_RECSD1 > 0 .And. a330ParamZX[04] == 1
+				Aadd(aRegsRE5,{TRB->TRB_RECNO, TRB->TRB_RECSD1,aRetPartes})
+			EndIf
+
+			//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+			//³ Acerta custo no SD3 caso necessario - Custo de RE5           ³
+			//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+			If TRB->TRB_RECTRB > 0 .And. a330ParamZX[04] == 1
+				aRet:=GravaCusD3(aCM,.T.,NIL,"330",NIL,lCstPart,aRegraCP,aRetPartes,.F.,1,lCusRep,aCMRep)
+				SD3->(MsUnlock())
+			EndIf
+			dbSelectArea("SD1")
+
+			//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+			//³ Atualiza o saldo final (VFIM) com os dados do SD1            ³
+			//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+			B2FimComD1(aCusto,NIL,NIL,lCstPart,aRetPartes,lCusRep)
+			TTFimComD1(aCusto,ACLONE(aRetPartes),cFilAnt,lCstPart)
+
+			//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+			//³ Ponto de Entrada MA330D1                                     ³
+			//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+			If lMA330D1
+				ExecBlock("MA330D1",.F.,.F.)
+			EndIf
+
+			If SF4->F4_PODER3 == "R"
+				A330GravaSB6("SD1",{SD1->D1_CUSTO,SD1->D1_CUSTO2,SD1->D1_CUSTO3,SD1->D1_CUSTO4,SD1->D1_CUSTO5},NIL,NIL,lCstPart,aRegraCP,NIL,lCusRep,aCMRep)
+			EndIf
+
+			//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+			//³ Gera o lancamento no arquivo de prova                        ³
+			//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+			A330DET(SD1->D1_SEQCALC,"641","MATA330","SD1",,a330ParamZX)
+
+			SD1->(MsUnlock())
+		EndIf
+
+	ElseIf TRB->TRB_ALIAS == "SD3"
+
+		dbSelectArea("SD3")
+		dbGoto(TRB->TRB_RECNO)
+		If a330ParamZX[04] == 1
+			GravaSeq("SD3")
+		EndIf
+		If SD3->D3_ESTORNO == "S" .And. a330ParamZX[04] == 1
+			RecLock("SD3",.F.)
+			Replace D3_CUSTO1 With 0
+			Replace D3_CUSTO2 With 0
+			Replace D3_CUSTO3 With 0
+			Replace D3_CUSTO4 With 0
+			Replace D3_CUSTO5 With 0
+			If lCusRep
+				Replace D3_CUSRP1 With 0
+				Replace D3_CUSRP2 With 0
+				Replace D3_CUSRP3 With 0
+				Replace D3_CUSRP4 With 0
+				Replace D3_CUSRP5 With 0
+			EndIf
+			SD3->(MsUnlock())
+			dbSelectArea("TRB")
+			dbSkip()
+			Loop
+		EndIf
+
+		//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+		//³ Posiciona no SB1 para formulas de lancamento contabil        ³
+		//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+		If lLanctoOn
+			dbSelectArea("SB1")
+			MsSeek(xFilial("SB1")+SD3->D3_COD)
+		EndIf
+
+		dbSelectArea("SD3")
+		//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+		//³ lTransito - Variavel utilizada para verificar se o movimento e   |
+		//| referente a um remito de transferencia entre filiais utilizando  |
+		//| o almoxarifado de TRANSITO definido pelo parametro MV_DEPTRAN    ³
+		//| (Somente utilizado por paises localizados)						 |
+		//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+		lTransito := cPaisLoc <> "BRA" .And. Alltrim(D3_CF)=="DE4" .And.;
+ 			         cDepTran==D3_LOCAL .And. !Empty(D3_DOC) .And. !Empty(D3_ITEM)
+		AFILL(aCMRep	,0)
+		AFILL(aAprRep	,0)
+		AFILL(aCustoRep ,0)
+		AFILL(aCM		,0)
+		AFILL(aCusto	,0)
+		AFILL(aApropria	,0)
+		AFILL(aAprInd	,0)
+		AFILL(aAprDir	,0)
+		dbSelectArea("SF5")
+		MsSeek(xFilial("SF5")+SD3->D3_TM)
+		dbSelectArea("SD3")
+		If Alltrim(D3_CF) $ "PR0/PR1" // Producoes
+			dbSelectArea("SC2")
+			If MsSeek(xFilial("SC2")+SD3->D3_OP)
+				//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+				//³ Pega o custo final (VFIM) desta OP                           ³
+				//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+				aRet        := PegaC2Fim("330",.F.,lCstPart,nPartes,lCusRep)
+				aApropria   := ACLONE(aRet[1])
+				If lCusRep
+					aAprRep     := ACLONE(aRet[4])
+				EndIf
+				If a330ParamZX[14] # 1 .And. nProdProp == 1
+					//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+					//³ Proporcionaliza custo do apontamento.                        ³
+					//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+					dbSelectArea("TRX")
+					MsSeek(cFilAnt+DTOS(TRB->TRB_DTBASE)+TRB->TRB_OP+TRB->TRB_COD+TRB->TRB_LOCAL)
+					nPropPR0 := (SD3->D3_QUANT+SD3->D3_PERDA)/((TRX->TRX_TOTAL+TRX_TPERDA)-TRX->TRX_QTDPRC)
+					cSeekTRX:=cFilAnt+DTOS(TRB->TRB_DTBASE)+TRB->TRB_OP+TRB->TRB_COD
+					cWhileTRX:="TRX_FILIAL+DTOS(TRX_DATA)+TRX_OP+TRX_COD"
+					dbSeek(cSeekTRX)
+					While !Eof() .And. cSeekTRX == &(cWhileTRX)
+						Reclock("TRX",.F.)
+						Replace TRX_QTDPRC With TRX_QTDPRC + (SD3->D3_QUANT+SD3->D3_PERDA)
+						TRX->(MsUnlock())
+						dbSkip()
+					End
+				ElseIf a330ParamZX[14] # 1 .And. ((nProdProp == 2 .And. SD3->D3_RATEIO > 0) .Or. nProdProp == 3)
+					//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+					//³ Verifica valorizacao do apontamento quando todos componentes ³
+					//³ ja foram requisitados                                        ³
+					//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+					lOPEncParc := nProdProp == 3 .And. (!Empty(SC2->C2_DATRF) .And. SC2->C2_DATRF <= a330ParamZX[01]) .And. SC2->C2_QUJE > 0 .And. (SC2->C2_QUJE + SC2->C2_PERDA) < SC2->C2_QUANT
+
+					If lOPEncParc
+						lOPEncParc := TRX->(dbSeek(cFilAnt+IIF(a330ParamZX[14]!=3,DTOS(a330ParamZX[01]),DTOS(dData))+SD3->D3_OP+SD3->D3_COD+SD3->D3_LOCAL))
+					EndIf
+
+					If SD3->D3_PARCTOT == "P"
+						If QtdComp(SC2->C2_APRFIM1) > QtdComp(0) .And. !lOPEncParc
+							nPropPR0 := 1-(SC2->C2_APRFIM1/(aApropria[1]+SC2->C2_APRFIM1))
+							nPropPR0 := If(nProdProp==2,SD3->D3_RATEIO/100,(SD3->D3_QUANT + SD3->D3_PERDA )/ max(SC2->C2_QUANT,SC2->C2_QUJE)) / nPropPR0
+						Else
+							If !lOPEncParc
+								nPropPR0 := If(nProdProp==2,SD3->D3_RATEIO/100,(SD3->D3_QUANT + SD3->D3_PERDA )/ max(SC2->C2_QUANT,SC2->C2_QUJE))
+							Else
+								nPropPR0 := (SD3->D3_QUANT + SD3->D3_PERDA) / ((TRX->TRX_QUANT + TRX->TRX_QPERDA) - (TRX->TRX_TOTAL + TRX->TRX_TPERDA))
+							EndIf
+						EndIf
+						nPropPR0 := Min(1,nPropPR0)
+
+						If lOPEncParc
+							Reclock("TRX",.F.)
+							Replace TRX_TOTAL With TRX_TOTAL + SD3->D3_QUANT
+							Replace TRX_TPERDA With TRX_TPERDA + SD3->D3_PERDA
+							TRX->(MsUnlock())
+						EndIf
+					Else
+						nPropPR0 := 1
+					EndIf
+					If lCusRep
+						If SD3->D3_PARCTOT == "P"
+							If QtdComp(SC2->C2_APRFRP1) > QtdComp(0)
+								nPropPR0Rp := 1-(SC2->C2_APRFRP1/(aAprRep[1]+SC2->C2_APRFRP1))
+								nPropPR0Rp := If(nProdProp==2,SD3->D3_RATEIO/100,(SD3->D3_QUANT + SD3->D3_PERDA )/ max(SC2->C2_QUANT,SC2->C2_QUJE)) / nPropPR0Rp
+							Else
+								nPropPR0Rp := If(nProdProp==2,SD3->D3_RATEIO/100,(SD3->D3_QUANT + SD3->D3_PERDA )/ max(SC2->C2_QUANT,SC2->C2_QUJE))
+							EndIf
+							nPropPR0Rp := Min(1,nPropPR0Rp)
+						Else
+							nPropPR0Rp := 1
+						EndIf
+					EndIf
+				EndIf
+
+				For nx:=1 to Len(aApropria)
+					aApropria[nx]:=aApropria[nx]*nPropPR0
+				Next nx
+
+				If lCusRep
+					For nx:=1 to Len(aAprRep)
+						aAprRep[nx]:=aAprRep[nx]*nPropPR0Rp
+					Next nx
+				EndIf
+
+				RecLock("SC2",.F.)
+				Replace C2_VFIM1     With C2_VFIM1 - aApropria[01]
+				If "2" $ cMoeda330C
+					Replace C2_VFIM2 With C2_VFIM2 - aApropria[02]
+				EndIf
+				If "3" $ cMoeda330C
+					Replace C2_VFIM3 With C2_VFIM3 - aApropria[03]
+				EndIf
+				If "4" $ cMoeda330C
+					Replace C2_VFIM4 With C2_VFIM4 - aApropria[04]
+				EndIf
+				If "5" $ cMoeda330C
+					Replace C2_VFIM5 With C2_VFIM5 - aApropria[05]
+				EndIf
+				If lCusRep
+					Replace C2_VFIMRP1     With C2_VFIMRP1 - aAprRep[01]
+					If "2" $ cMoeda330C
+						Replace C2_VFIMRP2 With C2_VFIMRP2 - aAprRep[02]
+					EndIf
+					If "3" $ cMoeda330C
+						Replace C2_VFIMRP3 With C2_VFIMRP3 - aAprRep[03]
+					EndIf
+					If "4" $ cMoeda330C
+						Replace C2_VFIMRP4 With C2_VFIMRP4 - aAprRep[04]
+					EndIf
+					If "5" $ cMoeda330C
+						Replace C2_VFIMRP5 With C2_VFIMRP5 - aAprRep[05]
+					EndIf
+				EndIf
+				SC2->(MsUnlock())
+
+				If lCstPart
+					//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+					//³ Pega o custo final em partes desta OP                        ³
+					//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+					aRetPartes:=PegaC2PFim(lCstPart,nPartes)
+					For nx:=1 to Len(aRetPartes)
+						aRetPartes[nx]:=aRetPartes[nx]*nPropPR0
+					Next nx
+
+					//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+					//³ Atualiza o custo final em partes desta OP                    ³
+					//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+					GravaC2CPF(aRetPartes,lCstPart,cMoeda330C)
+				EndIf
+
+				//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+				//³ Atualiza movimento do Pai                                    ³
+				//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+				If a330ParamZX[04] == 1
+					Reclock("SD3",.F.)
+					Replace D3_CUSTO1 With aApropria[1]
+					Replace D3_CUSTO2 With If("2" $ cMoeda330C,aApropria[2],0)
+					Replace D3_CUSTO3 With If("3" $ cMoeda330C,aApropria[3],0)
+					Replace D3_CUSTO4 With If("4" $ cMoeda330C,aApropria[4],0)
+					Replace D3_CUSTO5 With If("5" $ cMoeda330C,aApropria[5],0)
+					If lCusRep
+						Replace D3_CUSRP1 With aAprRep[1]
+						Replace D3_CUSRP2 With If("2" $ cMoeda330C,aAprRep[2],0)
+						Replace D3_CUSRP3 With If("3" $ cMoeda330C,aAprRep[3],0)
+						Replace D3_CUSRP4 With If("4" $ cMoeda330C,aAprRep[4],0)
+						Replace D3_CUSRP5 With If("5" $ cMoeda330C,aAprRep[5],0)
+					EndIf
+					SD3->(MsUnlock())
+					//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+					//³ Integracao com o Modulo de Manutencao de Ativos              ³
+					//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+					If lIntMntAt
+						NGCUSSTLMED(SD3->D3_NUMSEQ,SD3->D3_CUSTO1)
+					EndIf
+					//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+					//³ Grava o custo em partes no arquivo de movimento              ³
+					//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+					aRetPartes:=GravaCusCP(lCstPart,aRegraCP,NIL,"SD3",SD3->D3_COD,aRetPartes,1,NIL,{SD3->D3_CUSTO1,SD3->D3_CUSTO2,SD3->D3_CUSTO3,SD3->D3_CUSTO4,SD3->D3_CUSTO5})
+				EndIf
+				//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+				//³ Atualiza o saldo final (VFIM) com os dados do SD3            ³
+				//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+				//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+				//³ Nao calcula produtos "MAO DE OBRA"                           ³
+				//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+				If !IsProdMOD(SD3->D3_COD,.T.)
+					//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+					//³ A330QtdPR0 - Verifica se existe quantidade produzida "PR0"    |
+					//| para esta ordem de producao para verificar se deve valorizar  |
+					//| o custo para movimentos com D3_QUANT igual a zero.			  |
+					//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+					If A330QtdPR0(SC2->C2_NUM+SC2->C2_ITEM+SC2->C2_SEQUEN,SC2->C2_PRODUTO)
+						B2FimComD3(aApropria,NIL,NIL,NIL,lCusFil .Or. lCusEmp,lCstPart,aRetPartes,lCusRep,aClone(aAprRep))
+						TTFimComD3(aApropria,ACLONE(aRetPartes),,cFilAnt,lCstPart)
+					EndIf
+					If lMA330D3
+						ExecBlock("MA330D3",.F.,.F.)
+					EndIf
+				EndIf
+
+				dbSelectArea("SC2")
+				aCusto[01]     := aApropria[01] + C2_APRFIM1
+				If "2" $ cMoeda330C
+					aCusto[02] := aApropria[02] + C2_APRFIM2
+				EndIf
+				If "3" $ cMoeda330C
+					aCusto[03] := aApropria[03] + C2_APRFIM3
+				EndIf
+				If "4" $ cMoeda330C
+					aCusto[04] := aApropria[04] + C2_APRFIM4
+				EndIf
+				If "5" $ cMoeda330C
+					aCusto[05] := aApropria[05] + C2_APRFIM5
+				EndIf
+				RecLock("SC2",.F.)
+				Replace C2_APRFIM1     With aCusto[01]
+				If "2" $ cMoeda330C
+					Replace C2_APRFIM2 With aCusto[02]
+				EndIf
+				If "3" $ cMoeda330C
+					Replace C2_APRFIM3 With aCusto[03]
+				EndIf
+				If "4" $ cMoeda330C
+					Replace C2_APRFIM4 With aCusto[04]
+				EndIf
+				If "5" $ cMoeda330C
+					Replace C2_APRFIM5 With aCusto[05]
+				EndIf
+				If lCusRep
+					aCustoRep[01]     := aAprRep[01] + C2_APRFRP1
+					If "2" $ cMoeda330C
+						aCustoRep[02] := aAprRep[02] + C2_APRFRP2
+					EndIf
+					If "3" $ cMoeda330C
+						aCustoRep[03] := aAprRep[03] + C2_APRFRP3
+					EndIf
+					If "4" $ cMoeda330C
+						aCustoRep[04] := aAprRep[04] + C2_APRFRP4
+					EndIf
+					If "5" $ cMoeda330C
+						aCustoRep[05] := aAprRep[05] + C2_APRFRP5
+					EndIf
+					RecLock("SC2",.F.)
+					Replace C2_APRFRP1     With aCustoRep[01]
+					If "2" $ cMoeda330C
+						Replace C2_APRFRP2 With aCustoRep[02]
+					EndIf
+					If "3" $ cMoeda330C
+						Replace C2_APRFRP3 With aCustoRep[03]
+					EndIf
+					If "4" $ cMoeda330C
+						Replace C2_APRFRP4 With aCustoRep[04]
+					EndIf
+					If "5" $ cMoeda330C
+						Replace C2_APRFRP5 With aCustoRep[05]
+					EndIf
+				EndIf
+				SC2->(MsUnlock())
+
+				//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+				//³ Pega o custo final em partes desta OP                        ³
+				//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+				If lCstPart
+					aRetAPAtu:=PegaC2APF(lCstPart,nPartes)
+					//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+					//³ Atualiza o custo apropriado final em partes desta OP         ³
+					//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+					For nx:=1 to Len(aRetPartes)
+						aRetPartes[nx]:=aRetPartes[nx]+aRetAPAtu[nx]
+					Next nx
+					GravaC2APF(aRetPartes,lCstPart,cMoeda330C)
+				EndIf
+
+				//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+				//³ Gera o lancamento no arquivo de prova                        ³
+				//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+				A330DET(SD3->D3_SEQCALC,"668","MATA330","SD3",,a330ParamZX)
+			Else
+				//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+				//³ Atualiza o log de processamento com o erro  ³
+				//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+				M330JCTBLog("ERRO","A650NOP",Ap5GetHelp("A650NOP")+" - OP: "+SD3->D3_OP, a330ParamZX, cFil)
+			EndIf
+			//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+			//³ Zera os valores dos arrays para novo lote de movimentos      ³
+			//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+			AFILL(aCM		,0)
+			AFILL(aCusto	,0)
+			AFILL(aApropria	,0)
+			AFILL(aAprInd	,0)
+
+		ElseIf Alltrim(D3_CF) == "RE4" .Or. lTransito // Transferencias
+			If oQryRecDE4 == NIL
+				// processa pela sequencia do custo médio
+				cQuery := ""
+				cQuery += "SELECT R_E_C_N_O_ FROM "+RetSqlName("SD3")+" SD3 "
+				cQuery += "WHERE SD3.D3_FILIAL = ? " // '"+xFilial("SD3")+"' "
+				cQuery += "AND SD3.D3_COD  = ? " // '" +SD3->D3_COD+ "' "
+				cQuery += "AND SD3.D3_LOCAL = ? " // '" +SD3->D3_LOCAL+ "' "
+				cQuery += "AND SD3.D3_NUMSEQ = ? " // '" +SD3->D3_NUMSEQ+ "' "
+				cQuery += "AND SD3.D3_CF = ? " // 'DE4' "
+				cQuery += "AND SD3.D3_DOC = ? " // '" +SD3->D3_DOC+ "' "
+				cQuery += "and SD3.D3_UM  = ? " // '" +SD3->D3_UM+ "' "
+				cQuery += "and SD3.D3_EMISSAO  = ? " // '" +dtos(SD3->D3_EMISSAO)+ "' "
+				cQuery += "and SD3.D3_ESTORNO  = ? " // ' ' "
+				cQuery += "and SD3.D_E_L_E_T_  = ? " // ' ' "
+				cQuery := ChangeQuery(cQuery)
+				If __lLibVer
+					oQryRecDE4 := FwExecStatement():New(cQuery)
+				Else
+					oQryRecDE4 := FWPreparedStatement():New(cQuery)
+				EndIf
+			ENDIF
+			oQryRecDE4:SetString(1,xFilial("SD3"))
+			oQryRecDE4:SetString(2,SD3->D3_COD)
+			oQryRecDE4:SetString(3,SD3->D3_LOCAL)
+			oQryRecDE4:SetString(4,D3_NUMSEQ)
+			oQryRecDE4:SetString(5,'DE4')
+			oQryRecDE4:SetString(6,SD3->D3_DOC)
+			oQryRecDE4:SetString(7,SD3->D3_UM)
+			oQryRecDE4:SetString(8,dtos(SD3->D3_EMISSAO))
+			oQryRecDE4:SetString(9,' ')
+			oQryRecDE4:SetString(10,' ')
+
+			If __lLibVer
+				nSD3RecDE4 := oQryRecDE4:ExecScalar('R_E_C_N_O_')
+			Else
+				cQuery := oQryRecDE4:GetFixQuery()
+				nSD3RecDE4 := MpSysExecScalar(cQuery, 'R_E_C_N_O_')
+			EndIf
+
+			//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+			//³Quando a entrada foi gerada por um remito de consignacion, vou pegar ³
+			//³o custo de saida do almoxarifado de origem.                          ³
+			//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+			aRet := Nil
+			If lTransito
+				SD2->(DbSetOrder(3))
+				SD2->(DbSeek(xFilial("SD2")+SD3->D3_DOC))
+				While !SD2->(Eof()) .And. SD2->D2_FILIAL+SD2->D2_DOC ==  xFilial("SD2")+SD3->D3_DOC
+					If SD3->D3_ITEM == SD2->D2_ITEM .And. SD2->D2_COD == SD3->D3_COD .And. AllTrim(SD2->D2_ESPECIE) == "RTS"  //RTS - Remito de Transferencia de Saida
+						aRet :={{SD2->D2_CUSTO1/SD2->D2_QUANT,SD2->D2_CUSTO2/SD2->D2_QUANT,SD2->D2_CUSTO3/SD2->D2_QUANT,SD2->D2_CUSTO4/SD2->D2_QUANT,SD2->D2_CUSTO5/SD2->D2_QUANT},{0,0,0,0,0},{0,0,0,0,0},IIf(lCusRep,{SD2->D2_CUSRP1/SD2->D2_QUANT,SD2->D2_CUSRP2/SD2->D2_QUANT,SD2->D2_CUSRP3/SD2->D2_QUANT,SD2->D2_CUSRP4/SD2->D2_QUANT,SD2->D2_CUSRP5/SD2->D2_QUANT},{0,0,0,0,0})}
+						If lCusRep
+							aCMRep   :=ACLONE(aRet[4])
+						EndIf
+						Exit
+					EndIf
+					SD2->(DbSkip())
+					Loop
+				EndDo
+			EndIf
+
+			If aRet == Nil
+				If lCusFil .Or. lCusEmp
+					aRet   := A330TTFim(D3_COD,D3_LOCAL,,,"SD3","330",NIL,NIL,lCstPart,nPartes,lCusEmp)
+					aCMRep := {0,0,0,0,0}
+				Else
+					aRet  := PegaCMFim(D3_COD,D3_LOCAL,,,"SD3","330",NIL,NIL,lCstPart,nPartes,aRegraCP,lCusRep)
+					If lCusRep
+						aCMRep := ACLONE(aRet[4])
+					EndIf
+				EndIf
+			EndIf
+			aCM      :=ACLONE(aRet[1])
+			aRetPUnit:=ACLONE(aRet[3])
+
+			If Alltrim(D3_CF) == "RE4" // Transferencia
+
+				//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+				//³ Grava o custo da movimentacao                                ³
+				//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+				If a330ParamZX[04] == 1
+					aRet      := GravaCusD3(aCM,NIL,NIL,"330",NIL,lCstPart,aRegraCP,ACLONE(aRet[3]),lIntCusTMS,,lCusRep,ACLONE(aCMRep))
+					aCusto    := ACLONE(aRet[1])
+					aRetPartes:= ACLONE(aRet[3])
+					If lCusRep
+						aCMRep := ACLONE(aRet[4])
+					EndIf
+					SD3->(MsUnlock())
+				EndIf
+				//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+				//³ Atualiza o saldo final (VFIM) com os dados do SD3            ³
+				//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+				//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+				//³ Nao calcula produtos "MAO DE OBRA"                           ³
+				//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+				If !IsProdMOD(SD3->D3_COD,.T.)
+					B2FimComD3(aCusto,NIL,NIL,NIL,lCusFil .Or. lCusEmp,lCstPart,aRetPartes,lCusRep,ACLONE(aCMRep),nSD3RecDE4==0)
+					TTFimComD3(aCusto,ACLONE(aRetPartes),,cFilAnt,lCstPart)
+					If lMA330D3
+						ExecBlock("MA330D3",.F.,.F.)
+					EndIf
+				EndIf
+				//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+				//³ Gera o lancamento no arquivo de prova                        ³
+				//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+				A330DET(SD3->D3_SEQCALC,"670","MATA330","SD3",,a330ParamZX)
+
+			EndIf
+
+			If !lTransito
+				// Verificar este SKIP
+				dbSelectArea("TRB")
+				nRecOrig   :=Recno()
+				cNumSeqOrig:=TRB_SEQ
+				DbSelectArea("SD3")
+				if nSD3RecDE4 == 0
+					SD3->(DbSetOrder(6)) //D3_FILIAL+DTOS(D3_EMISSAO)+D3_NUMSEQ+D3_CHAVE+D3_COD
+					If SD3->(MsSeek(TRB->TRB_FILIAL + DtoS(TRB->TRB_DTORIG) + TRB->TRB_SEQ))
+						cKeySD3TRB := D3_FILIAL + DTOS(D3_EMISSAO) + D3_NUMSEQ
+						While D3_FILIAL + DTOS(D3_EMISSAO) + D3_NUMSEQ == cKeySD3TRB
+							If SD3->D3_CF == "DE4"
+								Exit
+							EndIf
+							SD3->(DbSkip())
+						EndDo
+					EndIf
+				else
+					SD3->(MsGoto(nSD3RecDE4)) //D3_FILIAL+DTOS(D3_EMISSAO)+D3_NUMSEQ+D3_CHAVE+D3_COD
+				EndIf
+			EndIf
+
+			If SubStr(SD3->D3_CF,3,1) == "4" .And. IIf(lTransito,.T.,SD3->D3_NUMSEQ == cNumSeqOrig) // Transferencias
+				If a330ParamZX[04] == 1
+					GravaSeq("SD3")
+				EndIf
+				dbSelectArea("SB2")
+				dbSetOrder(1)
+				MsSeek(xFilial("SB2")+SD3->D3_COD+SD3->D3_LOCAL)
+
+				//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+				//³ Grava o custo da movimentacao                                ³
+				//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+				If a330ParamZX[04] == 1
+					If lTransito
+						aRet := GravaCusD3(aCM,NIL,NIL,"330",NIL,lCstPart,aRegraCP,ACLONE(aRetPUnit),lIntCusTMS,,lCusRep,ACLONE(aCMRep))
+					Else
+						aRet := GravaCusD3(aRet[1],.T.,NIL,"330",NIL,lCstPart,aRegraCP,ACLONE(aRetPUnit),lIntCusTMS,,lCusRep,ACLONE(aCMRep))
+					EndIf
+					aCusto     := ACLONE(aRet[1])
+					aRetPartes := ACLONE(aRet[3])
+					If lCusRep
+						aCMRep := ACLONE(aRet[4])
+					EndIf
+					SD3->(MsUnlock())
+				EndIf
+
+				//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+				//³ Atualiza o saldo final (VFIM) com os dados do SD3            ³
+				//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+				//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+				//³ Nao calcula produtos "MAO DE OBRA"                           ³
+				//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+				If !IsProdMOD(SD3->D3_COD,.T.)
+					B2FimComD3(aCusto,NIL,NIL,NIL,lCusFil .Or. lCusEmp,lCstPart,aRetPartes,lCusRep,ACLONE(aCMRep),nSD3RecDE4==0)
+					TTFimComD3(aCusto,ACLONE(aRetPartes),,cFilAnt,lCstPart)
+					If lMA330D3
+						ExecBlock("MA330D3",.F.,.F.)
+					EndIf
+				EndIf
+
+				//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+				//³ Gera o lancamento no arquivo de prova                        ³
+				//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+				A330DET(SD3->D3_SEQCALC,"672","MATA330","SD3",,a330ParamZX)
+
+				//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+				//³ Corrige o custo do CQ caso tenha sido originado por RE4      ³
+				//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+				If SD3->D3_LOCAL == cLocalCQ
+					aCM        := {SD3->D3_CUSTO1,SD3->D3_CUSTO2,SD3->D3_CUSTO3,SD3->D3_CUSTO4,SD3->D3_CUSTO5}
+					aCMSD3     := ACLONE(aCM)
+					If lCusRep
+						aCMRep    := {SD3->D3_CUSRP1,SD3->D3_CUSRP2,SD3->D3_CUSRP3,SD3->D3_CUSRP4,SD3->D3_CUSRP5}
+						aCMSD3Rep := ACLONE(aCMRep)
+					EndIf
+					dbSelectArea("SD7")
+					dbSetOrder(3) //-- D7_FILIAL+D7_PRODUTO+D7_NUMSEQ+D7_NUMERO
+					If MsSeek(xFilial("SD7")+SD3->D3_COD+SD3->D3_NUMSEQ)
+						lUltSD7    := .F.
+						cSeekD7    := D7_FILIAL+D7_NUMERO+D7_PRODUTO+D7_LOCAL
+						nQuantOriD7:= D7_SALDO
+						dbSetOrder(2) //-- D7_FILIAL+D7_NUMERO+D7_PRODUTO+D7_LOCAL+D7_NUMSEQ+STR(D7_TIPO)
+						MsSeek(cSeekD7)
+					EndIf
+					While !Eof() .And. cSeekD7 == D7_FILIAL+D7_NUMERO+D7_PRODUTO+D7_LOCAL
+						If Empty(D7_ESTORNO) .And. D7_TIPO # 0 .And. D7_TIPO # 5 .And. D7_TIPO # 8
+							dbSkip()
+							If cSeekD7 # D7_FILIAL+D7_NUMERO+D7_PRODUTO+D7_LOCAL
+								lUltSD7    := .T.
+							EndIf
+							dbSkip(-1)
+							dbSelectArea("SD3")
+							dbSetOrder(4) //-- D3_FILIAL+D3_NUMSEQ+D3_CHAVE+D3_COD
+							If MsSeek(xFilial("SD3")+SD7->D7_NUMSEQ) .And. PadR(SD7->D7_NUMERO,nTamDoc) == SD3->D3_DOC .And. QtdComp(SD3->D3_QUANT) # QtdComp(0)
+								While !Eof() .And. xFilial("SD3")+SD7->D7_NUMSEQ == D3_FILIAL+D3_NUMSEQ
+									Reclock("SD3",.F.)
+									Replace D3_CUSTO1 With If(lUltSD7,aCMSD3[1],aCm[1]*(SD3->D3_QUANT/nQuantOriD7))
+									Replace D3_CUSTO2 With If("2" $ cMoeda330C,If(lUltSD7,aCMSD3[2],aCm[2]*(SD3->D3_QUANT/nQuantOriD7)),0)
+									Replace D3_CUSTO3 With If("3" $ cMoeda330C,If(lUltSD7,aCMSD3[3],aCm[3]*(SD3->D3_QUANT/nQuantOriD7)),0)
+									Replace D3_CUSTO4 With If("4" $ cMoeda330C,If(lUltSD7,aCMSD3[4],aCm[4]*(SD3->D3_QUANT/nQuantOriD7)),0)
+									Replace D3_CUSTO5 With If("5" $ cMoeda330C,If(lUltSD7,aCMSD3[5],aCm[5]*(SD3->D3_QUANT/nQuantOriD7)),0)
+									If lCusRep
+										Replace D3_CUSRP1 With If(lUltSD7,aCMSD3Rep[1],aCMSD3Rep[1]*(SD3->D3_QUANT/nQuantOriD7))
+										Replace D3_CUSRP2 With If("2" $ cMoeda330C,If(lUltSD7,aCMSD3Rep[2],aCm[2]*(SD3->D3_QUANT/nQuantOriD7)),0)
+										Replace D3_CUSRP3 With If("3" $ cMoeda330C,If(lUltSD7,aCMSD3Rep[3],aCm[3]*(SD3->D3_QUANT/nQuantOriD7)),0)
+										Replace D3_CUSRP4 With If("4" $ cMoeda330C,If(lUltSD7,aCMSD3Rep[4],aCm[4]*(SD3->D3_QUANT/nQuantOriD7)),0)
+										Replace D3_CUSRP5 With If("5" $ cMoeda330C,If(lUltSD7,aCMSD3Rep[5],aCm[5]*(SD3->D3_QUANT/nQuantOriD7)),0)
+									EndIf
+									SD3->(MsUnlock())
+									//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+									//³ Integracao com o Modulo de Manutencao de Ativos              ³
+									//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+									If lIntMntAt
+										NGCUSSTLMED(SD3->D3_NUMSEQ,SD3->D3_CUSTO1)
+									EndIf
+									//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+									//³ So processa uma vez para nao comprometer saldo               ³
+									//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+									If !lUltSD7 .And. SD3->D3_LOCAL == SD7->D7_LOCAL
+										For nx:=1 to 5
+											// Verifica se moeda devera ser considerada
+											If nx # 1 .And. !(Str(nx,1,0) $ cMoeda330C)
+							                	Loop
+	   										EndIf
+											aCMSD3[nx]-=&(Eval(bBloco,"D3_CUSTO",nX))
+											If lCusRep
+												aCMSD3Rep[nx]-=&(Eval(bBloco,"D3_CUSRP",nX))
+											EndIf
+										Next nx
+									EndIf
+									dbSkip()
+								End
+							EndIf
+						EndIf
+						dbSelectArea("SD7")
+						dbSkip()
+					EndDo
+				EndIf
+			Else
+				dbSelectArea("TRB")
+				MsGoto(nRecOrig)
+			EndIf
+		ElseIf Alltrim(SD3->D3_CF) == "RE7"      // Transferencias Multiplas
+			A330ProcRE7(.F.,lCstPart,aRegraCP,lCusRep)
+		ElseIf Alltrim(SD3->D3_CF) != "DE7" .And. Alltrim(SD3->D3_CF) != "DE4"   // RE0,1,2,3 e suas DE's respectivas
+			//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+			//³     Pega o tipo de apropriacao do material                   ³
+			//³==============================================================³
+			//³ 0 = Requisicao Manual de material Direto                     ³
+			//³ 1 = Requisicao Automatica de material Direto                 ³
+			//³ 2 = Requisicao Automatica de material Indireto               ³
+			//³ 3 = Requisicao Manual de material Indireto                   ³
+			//³ 4 = Transferencias em geral                                  ³
+			//³ 5 = Apropriacao direta de entrada na Op                      ³
+			//³ 9 = Requisicao para OP sem agregar custo para a mesma        ³
+			//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+			cApropri := SubStr(SD3->D3_CF,3,1)
+			//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+			//³ Gera o lancamento no arquivo de prova                        ³
+			//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+			lLct667669 := .F.
+			If SubStr(SD3->D3_CF,3,1) != "2"
+				If SD3->D3_TM <= "500"
+					lLct667669 := A330DET(SD3->D3_SEQCALC,"669","MATA330","SD3",,a330ParamZX)
+				Else
+					lLct667669 := A330DET(SD3->D3_SEQCALC,"667","MATA330","SD3",,a330ParamZX)
+				EndIf
+			EndIf
+			//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+			//³ Pega os custos medios finais                                 ³
+			//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+			If !(cApropri $ "568A")
+				If lCusFil .Or. lCusEmp
+					aRet  := A330TTFim(SD3->D3_COD,If(SD3->D3_CF <> "DE3",SD3->D3_LOCAL,cLocProc),,,"SD3","330",NIL,NIL,lCstPart,nPartes,lCusEmp)
+					aCMRep:= {0,0,0,0,0}
+				Else
+					aRet := PegaCMFim(SD3->D3_COD,If(SD3->D3_CF <> "DE3",SD3->D3_LOCAL,cLocProc),,,"SD3","330",NIL,NIL,lCstPart,nPartes,aRegraCP,lCusRep)
+					If lCusRep
+						aCMRep := ACLONE(aRet[4])
+					EndIf
+				EndIf
+				aCM       := ACLONE(aRet[1])
+				aRetPartes:= ACLONE(aRet[3])
+				If a330ParamZX[04] == 1
+					aRet      := GravaCusD3(aCM,NIL,NIL,"330",NIL,lCstPart,aRegraCP,ACLONE(aRetPartes),lIntCusTMS,,lCusRep,aCMRep)
+					aCusto    := ACLONE(aRet[1])
+					aRetPartes:= ACLONE(aRet[3])
+					If lCusRep
+						aCMRep    := ACLONE(aRet[4])
+					EndIf
+					dbSelectArea("SD3")
+					SD3->(MsUnlock())
+				Else
+					aCusto := {SD3->D3_CUSTO1,SD3->D3_CUSTO2,SD3->D3_CUSTO3,SD3->D3_CUSTO4,SD3->D3_CUSTO5}
+				EndIf
+			Else
+
+ 				//
+				//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+				//³ Procura movimento RE5 já processado pelo SD1 para recuperar o custo em partes. ³
+				//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+				nAchou := 0
+				If cApropri=="5"
+			    	nAchou := Ascan(aRegsRE5,{|a| a[2]==TRB->TRB_RECNO})
+			    	If nAchou > 0 .And. Len(aRegsRE5[nAchou])>=3
+			    		aRetPartes := aRegsRE5[nAchou,3]
+			    	Else
+			    		nAchou := 0
+			    	EndIf
+			   EndIf
+
+				//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+				//³ A330CustoCQ - Recupera o custo original do movimento CQ            ³
+				//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+				If cApropri == "6" .And. A330CustoCQ(SD3->D3_DOC,SD3->D3_COD,cLocalCQ,SD3->D3_NUMSEQ,aCM,lCusRep,aCMRep,aRetPartes,nPartes,lCstPart)
+					GravaCusD3(aCM,NIL,NIL,"330",NIL,lCstPart,aRegraCP,aRetPartes,lIntCusTMS,,lCusRep,ACLONE(aCMRep))
+					aCM := {SD3->D3_CUSTO1,SD3->D3_CUSTO2,SD3->D3_CUSTO3,SD3->D3_CUSTO4,SD3->D3_CUSTO5}
+				Else
+					If cApropri == "A"
+						aCM := A330AjCusto(1)
+					Else
+						aCM    := {SD3->D3_CUSTO1,SD3->D3_CUSTO2,SD3->D3_CUSTO3,SD3->D3_CUSTO4,SD3->D3_CUSTO5}
+						If lCusRep
+							aCMRep := A330AjCusto(2)
+						Else
+							aCMRep := {0,0,0,0,0}
+						EndIf
+					EndIf
+					//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+					//³ Grava o custo em partes no arquivo de movimento              ³
+					//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+	                 If lCstPart
+	                  If nAchou > 0 //Ajusta o Custo em Partes com Base na RE5
+							aRetPartes:=GravaCusCP(lCstPart,aRegraCP,aCM,"SD3",SD3->D3_COD,aRetPartes,1,NIL,ACLONE(aCM))
+						 Else //Ajusta o Custo em Partes com Base na Regra
+							aRetPartes:=GravaCusCP(lCstPart,aRegraCP,aCM,"SD3",SD3->D3_COD,NIL,SD3->D3_QUANT,NIL,ACLONE(aCM))
+						 EndIf
+					EndIf
+				EndIf
+				aCusto := ACLONE(aCM)
+			EndIf
+
+			//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+			//³ Executa P.E. para alterar valor do array com o custo medio   ³
+			//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+			If lMA330C3
+				aBackCusto :=ACLONE(aCusto)
+				aCusto:=ExecBlock("MA330C3",.F.,.F.,aCusto)
+				If Valtype(aCusto) != "A"
+					aCusto:=ACLONE(aBackCusto)
+				EndIf
+			EndIf
+
+			//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+			//³ Executa P.E. para alterar valor do array com o custo medio   ³
+			//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+			If lMA330P3
+				aBackCusto :=ACLONE(aRetPartes)
+				aRetPartes :=ExecBlock("MA330P3",.F.,.F.,{aCusto,lCstPart,aRegraCP,ACLONE(aRetPartes)})
+				If Valtype(aRetPartes) != "A"
+					aRetPartes:=ACLONE(aBackCusto)
+				EndIf
+			EndIf
+
+			//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+			//³ Atualiza o saldo final (VFIM) com os dados do SD3            ³
+			//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+			//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+			//³ Nao calcula produtos "MAO DE OBRA"                           ³
+			//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+			If !IsProdMOD(SD3->D3_COD,.T.)
+				B2FimComD3(aCusto,NIL,NIL,NIL,lCusFil .Or. lCusEmp,lCstPart,aRetPartes,lCusRep,ACLONE(aCMRep))
+				TTFimComD3(aCusto,ACLONE(aRetPartes),,cFilAnt,lCstPart)
+				If lMA330D3
+					ExecBlock("MA330D3",.F.,.F.)
+				EndIf
+			EndIf
+			//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+			//³ Verifica se o movimento e' referente a requisicao manual     ³
+			//³ de material indireto para atualizar o saldo final (VFIM)     ³
+			//³ do processo com os dados do SD3                              ³
+			//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+			If cApropri == "3"
+				//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+				//³ Atualiza o saldo final (VFIM) com os dados do SD3            ³
+				//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+				//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+				//³ Nao calcula produtos "MAO DE OBRA"                           ³
+				//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+				If !IsProdMOD(SD3->D3_COD,.T.)
+					B2FimComD3(aCusto,cLocProc,NIL,NIL,lCusFil .Or. lCusEmp,lCstPart,aRetPartes,lCusRep,ACLONE(aCMRep))
+					TTFimComD3(aCusto,ACLONE(aRetPartes),cLocProc,cFilAnt,lCstPart)
+					If lMA330D3
+						ExecBlock("MA330D3",.F.,.F.)
+					EndIf
+				EndIf
+			EndIf
+
+			//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+			//³ Atualiza os saldos finais (VFIM) das OP's                    ³
+			//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+			If !Empty(SD3->D3_OP) .And. cAproPri # "9"
+				If SC2->(dbSeek(xFilial("SC2")+SD3->D3_OP))
+					C2FimComD3(aCusto,NIL,NIL,lCstPart,aRetPartes,lCusRep,ACLONE(aCMRep))
+				Else
+					//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+					//³ Atualiza o log de processamento com o erro  ³
+					//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+					M330JCTBLog("ERRO","A650NOP",Ap5GetHelp("A650NOP")+" - OP: "+SD3->D3_OP, a330ParamZX, cFil)
+				EndIf
+			EndIf
+
+			//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+			//³ Atualiza os saldos finais (VFIM) das Tarefas                 ³
+			//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+			If !Empty(SD3->D3_PROJPMS)
+				AF9FimComD3(aCusto)
+			EndIf
+			//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+			//³ Verifica se o custo medio e' calculado On-Line               ³
+			//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+			If SubStr(SD3->D3_CF,3,1) != "2"
+				//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+				//³ Gera o lancamento no arquivo de prova                        ³
+				//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+				If SD3->D3_TM <= "500"
+					A330DET(SD3->D3_SEQCALC,"668","MATA330","SD3",lLct667669,a330ParamZX)
+
+					// Verifica se existe rateio na SA para contabilizar
+					If lVer67B .And. !Empty(SD3->D3_NUMSA) .And. !Empty(SD3->D3_ITEMSA)
+						A330CtbRat(SD3->D3_NUMSA, SD3->D3_ITEMSA, SD3->D3_SEQCALC, "67B", lLct667669, a330ParamZX)
+					EndIf
+
+				Else
+					A330DET(SD3->D3_SEQCALC,"666","MATA330","SD3",lLct667669,a330ParamZX)
+
+					// Verifica se existe rateio na SA para contabilizar
+					If lVer67A .And. !Empty(SD3->D3_NUMSA) .And. !Empty(SD3->D3_ITEMSA)
+						A330CtbRat(SD3->D3_NUMSA, SD3->D3_ITEMSA, SD3->D3_SEQCALC, "67A", lLct667669, a330ParamZX)
+					EndIf
+
+				EndIf
+			Else
+				//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+				//³ Gera o lancamento no arquivo de prova                        ³
+				//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+				If SD3->D3_TM <= "500"
+					A330DET(SD3->D3_SEQCALC,"679","MATA330","SD3",lLct667669,a330ParamZX)
+				Else
+					A330DET(SD3->D3_SEQCALC,"680","MATA330","SD3",lLct667669,a330ParamZX)
+				EndIf
+			EndIf
+
+			dbSelectArea("SD3")
+			If SD3->D3_TM <= "500"
+				If cApropri == "2"
+					For nX := 1 To nTamArrCus
+						// Verifica se moeda devera ser considerada
+						If nx # 1 .And. !(Str(nx,1,0) $ cMoeda330C)
+		                	Loop
+	     				EndIf
+						aAprInd[nX] := aAprInd[nX] - aCusto[nX]
+					Next nX
+				ElseIf cApropri != "3"
+					For nX := 1 To nTamArrCus
+						// Verifica se moeda devera ser considerada
+						If nx # 1 .And. !(Str(nx,1,0) $ cMoeda330C)
+		                	Loop
+	     				EndIf
+						aAprDir[nX] := aAprDir[nX] - aCusto[nX]
+					Next nX
+				EndIf
+			Else
+				If cApropri == "2"
+					For nX := 1 To nTamArrCus
+						// Verifica se moeda devera ser considerada
+						If nx # 1 .And. !(Str(nx,1,0) $ cMoeda330C)
+		                	Loop
+	     				EndIf
+						aAprInd[nX] := aAprInd[nX] + aCusto[nX]
+					Next nX
+				ElseIf cApropri != "3"
+					For nX := 1 To nTamArrCus
+						// Verifica se moeda devera ser considerada
+						If nx # 1 .And. !(Str(nx,1,0) $ cMoeda330C)
+		                	Loop
+	     				EndIf
+						aAprDir[nX] := aAprDir[nX] + aCusto[nX]
+					Next nX
+				EndIf
+			EndIf
+		EndIf
+
+	ElseIf TRB->TRB_ALIAS == "SD2"
+
+		// Posiciona na tabela SD2
+		dbSelectArea("SD2")
+		dbGoto(TRB->TRB_RECNO)
+
+		//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+		//³ LOCALIZACOES - Grava o custo de saida do remito que originou ³
+		//³ a nota, cuando esta proviene de um remito, pois as Notas de  ³
+		//³ credito pegam o custo de saida original do SD2 a nao do REM).³
+		//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+		If cPaisLoc == "BRA" .Or. Empty(SD2->D2_REMITO) .Or. (SD2->D2_TPDCENV $ _RMCONS)
+			GravaSeq("SD2")
+			//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+			//³ Posiciona no SB1 para formulas de lancamento contabil        ³
+			//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+			If lLanctoOn
+				dbSelectArea("SB1")
+				MsSeek(xFilial("SB1")+SD2->D2_COD)
+			EndIf
+			//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+			//³ Posiciona no SF4 - TES                                       ³
+			//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+			dbSelectArea("SF4")
+			MsSeek(xFilial("SF4")+SD2->D2_TES)
+			dbSelectArea("SD2")
+
+			If SF4->F4_PODER3 == "D"
+				aRet       := A330PegaSB6("SD2",.F.,"330",lCstPart,nPartes,lCusRep)
+				aCM        := aRet[1]
+				aRetPartes := aRet[3]
+				If lCusRep
+					aCMRep     := aRet[4]
+				EndIf
+				If lM330CD2
+					aBackCusto :=ACLONE(aCM)
+					aCM:=ExecBlock("M330CD2",.F.,.F.,{aCM,.F.})
+					If Valtype(aCM) != "A"
+						aCM:=ACLONE(aBackCusto)
+					EndIf
+				EndIf
+				aRet       := GravaCusD2(aCM,"N",NIL,"330",lCstPart,aRegraCP,ACLONE(aRetPartes),.F.,,lCusRep,aCMRep)
+				aCusto     := aRet[1]
+				aRetPartes := aRet[3]
+				If lCusRep
+					aCMRep := aRet[4]
+				EndIf
+				SD2->(MsUnlock())
+				B2FimComD2(aCusto,NIL,NIL,lCstPart,aRetPartes,lCusRep,aCMRep)
+				TTFimComD2(aCusto,ACLONE(aRetPartes),cFilAnt)
+
+				//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+				//³ Analisa se o item da nota de saida ("SD2") possui amarracao com a |
+				//| guia de despacho ("Remito") e entao atualiza a guia de despacho   |
+				//| com o mesmo custo da nota original. (Localizacoes)		          |
+				//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+				If !(SD2->D2_TPDCENV $ _RMCONS) .And. cPaisLoc <> "BRA"
+					A330GrvRem(2)
+				EndIf
+
+				//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+				//³ A330CDEV - Ponto de Entrada utilizado para contabilizar os   |
+				//| lancamentos de devolucao de compras LP 678                   |
+				//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+				If lA330CDEV .And. SF4->F4_PODER3 <> "R" .And. ExecBlock("A330CDEV",.F.,.F.)
+					//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+					//³ Gera o lancamento no arquivo de prova                        ³
+					//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+					A330DET(SD2->D2_SEQCALC,"678","MATA330","SD2",,a330ParamZX)
+				EndIf
+
+			Else
+
+				// Posicionamento do SF2 para pegar a taxa e a moeda
+				If cPaisLoc<>"BRA"
+					DbselectArea("SF2")
+					DbSetOrder(1)
+					DbSeek(xFilial("SF2")+SD2->D2_DOC+SD2->D2_SERIE+SD2->D2_CLIENTE+SD2->D2_LOJA)
+					Do While !Eof() .And. SD2->D2_DOC+SD2->D2_SERIE+SD2->D2_CLIENTE+SD2->D2_LOJA == F2_DOC+F2_SERIE+F2_CLIENTE+F2_LOJA
+						If Alltrim(F2_ESPECIE) ==Alltrim(SD2->D2_ESPECIE)
+							Exit
+						Else
+							DbSkip()
+							Loop
+						EndIf
+					EndDo
+					Dbselectarea("SD2")
+				EndIf
+
+				If SD2->D2_TIPO != "D"
+					//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+					//³ Obter o array de Impostos para enviar para aCusto. S¢ paises  ³
+					//³ do ConeSul. Allergan - 03/03/99 JLucas...                     ³
+					//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+					If cPaisLoc # "BRA"
+						nTaxa		:=	SF2->F2_TXMOEDA
+						nMoedaNf	:=	SF2->F2_MOEDA
+						nRatFrete:= xMoeda(SF2->F2_FRETE   * (SD2->D2_TOTAL / SF2->F2_VALMERC),SF2->F2_MOEDA,1,SF2->F2_EMISSAO,,nTaxa)
+						nRatDesp := XMoeda(SF2->F2_DESPESA * (SD2->D2_TOTAL / SF2->F2_VALMERC),SF2->F2_MOEDA,1,SF2->F2_EMISSAO,,nTaxa)
+					EndIf
+					//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+					//³ Processa as vendas                                           ³
+					//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+					aEnvCus := A330EnvCus( aImpCusto )
+
+					//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+					//³ Pega os custos medios finais                                 ³
+					//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+					If lCusFil .Or. lCusEmp
+						aRet  := A330TTFim(SD2->D2_COD,SD2->D2_LOCAL,SD2->D2_TIPO,aEnvCus,"SD2","330",NIL,NIL,lCstPart,nPartes,lCusEmp)
+						aCMRep:= {0,0,0,0,0}
+					Else
+						aRet  := PegaCMFim(SD2->D2_COD,SD2->D2_LOCAL,SD2->D2_TIPO,aEnvCus,"SD2","330",NIL,NIL,lCstPart,nPartes,aRegraCP,lCusRep)
+						If lCusRep
+							aCMRep := aRet[4]
+						EndIf
+					EndIf
+					aCM        := aRet[1]
+					aRetPartes := aRet[3]
+					//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+					//³ Grava o custo da nota fiscal de saida                        ³
+					//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+					If lM330CD2
+						aBackCusto :=ACLONE(aCM)
+						aCM:=ExecBlock("M330CD2",.F.,.F.,{aCM,.F.})
+						If Valtype(aCM) != "A"
+							aCM:=ACLONE(aBackCusto)
+						EndIf
+					EndIf
+					aRet       := GravaCusD2(aCM,SD2->D2_TIPO,NIL,"330",lCstPart,aRegraCP,ACLONE(aRetPartes),.F.,,lCusRep,aCMRep)
+					aCusto     := aRet[1]
+					aRetPartes := aRet[3]
+					If lCusRep
+						aCMRep := aRet[4]
+					EndIf
+					//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+					//³ Atualiza o saldo final (VFIM) com os dados do SD2            ³
+					//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+					B2FimComD2(aCusto,NIL,NIL,lCstPart,aRetPartes,lCusRep,aCMRep)
+					TTFimComD2(aCusto,ACLONE(aRetPartes),cFilAnt)
+
+					//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+					//³ Analisa se o item da nota de saida ("SD2") possui amarracao com a |
+					//| guia de despacho ("Remito") e entao atualiza a guia de despacho   |
+					//| com o mesmo custo da nota original. (Localizacoes)		          |
+					//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+					If !(SD2->D2_TPDCENV $ _RMCONS) .And. cPaisLoc <> "BRA"
+						A330GrvRem(2)
+					EndIf
+
+					If lMA330D2
+						ExecBlock("MA330D2",.F.,.F.)
+					EndIf
+
+					If SF4->F4_PODER3 == "R"
+						A330GravaSB6("SD2",aCusto,NIL,NIL,lCstPart,aRegraCP,aRetPartes,lCusRep,aCMRep)
+					EndIf
+					//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+					//³ Gera o lancamento no arquivo de prova                        ³
+					//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+					A330DET(SD2->D2_SEQCALC,"678","MATA330","SD2",,a330ParamZX)
+					SD2->(MsUnlock())
+				Else
+					//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+					//³ Processa as devolucoes de compra                             ³
+					//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+					aEnvCus := A330EnvCus()
+					//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+					//³ Pega os custos medios finais                                 ³
+					//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+					//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+					//³ Na Funcao PegaCMFim() Esta Tratando CUSTO FIFO / LIFO        ³
+					//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+					If lCusFil .Or. lCusEmp
+						aRet  := A330TTFim(SD2->D2_COD,SD2->D2_LOCAL,SD2->D2_TIPO,aEnvCus,"SD2","330",.T.,NIL,lCstPart,nPartes,lCusEmp)
+						aCMRep:= {0,0,0,0,0}
+					Else
+						aRet  := PegaCMFim(SD2->D2_COD,SD2->D2_LOCAL,SD2->D2_TIPO,aEnvCus,"SD2","330",(!MaTesSel(SD2->D2_TES)).And.QtdComp(SD2->D2_QUANT)>QtdComp(0),NIL,lCstPart,nPartes,aRegraCP,lCusRep,SD2->D2_QUANT == 0)
+						If lCusRep
+		    	        	aCMRep := aRet[4]
+		    	        EndIf
+					EndIf
+					aCM       := aRet[1]
+					aRetPartes:= aRet[3]
+					//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+					//³ Grava o custo da nota fiscal de saida                        ³
+					//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+					If lM330CD2
+						aBackCusto :=ACLONE(aCM)
+						aCM:=ExecBlock("M330CD2",.F.,.F.,{aCM,.F.})
+						If Valtype(aCM) != "A"
+							aCM:=ACLONE(aBackCusto)
+						EndIf
+					EndIf
+					aRet       := GravaCusD2(aCM,SD2->D2_TIPO,NIL,"330",lCstPart,aRegraCP,ACLONE(aRetPartes),.F.,,lCusRep,aClone(aCMRep))
+					aCusto     := aRet[1]
+					aRetPartes := aRet[3]
+					If lCusRep
+						aCMRep := aRet[4]
+					EndIf
+					//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+					//³ Atualiza o saldo final (VFIM) com os dados do SD2            ³
+					//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+					B2FimComD2(aCusto,NIL,NIL,lCstPart,aRetPartes,lCusRep,aClone(aCMRep))
+					TTFimComD2(aCusto,ACLONE(aRetPartes),cFilAnt)
+
+					//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+					//³ Analisa se o item da nota de saida ("SD2") possui amarracao com a |
+					//| guia de despacho ("Remito") e entao atualiza a guia de despacho   |
+					//| com o mesmo custo da nota original. (Localizacoes)		          |
+					//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+					If !(SD2->D2_TPDCENV $ _RMCONS) .And. cPaisLoc <> "BRA"
+						A330GrvRem(2)
+					EndIf
+
+					If lMA330D2
+						ExecBlock("MA330D2",.F.,.F.)
+					EndIf
+
+					If SF4->F4_PODER3 == "R"
+						A330GravaSB6("SD2",aCusto,NIL,NIL,lCstPart,aRegraCP,aRetPartes,lCusRep,aClone(aCMRep))
+					EndIf
+
+					//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+					//³ A330CDEV - Ponto de Entrada utilizado para contabilizar os   |
+					//| lancamentos de devolucao de compras LP 678                   |
+					//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+					If lA330CDEV .And. SF4->F4_PODER3 <> "R" .And. ExecBlock("A330CDEV",.F.,.F.)
+						//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+						//³ Gera o lancamento no arquivo de prova                        ³
+						//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+						A330DET(SD2->D2_SEQCALC,"678","MATA330","SD2",,a330ParamZX)
+					EndIf
+					SD2->(MsUnlock())
+				EndIf
+			EndIf
+			// Adiciona custos na lista de transferencia
+			If !Empty(TRB->TRB_FILTRA)
+				cKeyListaTRF := cFilAnt+TRB->TRB_FILTRA+SD2->D2_DOC+SD2->D2_SERIE +A330ConvIT(SD2->D2_ITEM,'SD1')
+				oListaTRF[cKeyListaTRF] := {cFilAnt,TRB->TRB_FILTRA,SD2->D2_DOC,SD2->D2_SERIE,SD2->D2_COD,TRB->TRB_QUANT,aClone(aCM),aClone(aCusto),aClone(aRetPartes),aClone(aCMRep),A330ConvIT(SD2->D2_ITEM,'SD1')}
+			EndIf
+		Else
+			//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+			//³ Grava o custo de saida que foi calculado para o Remito       ³
+			//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+			A330GrvRem()
+		EndIf
+	EndIf
+	dbSelectArea("TRB")
+	dbSetOrder(nOrdem)
+	dbSkip()
+End
+
+// Restaura filial original
+cFilAnt:=cFilBack
+
+//- Força o Flush com a tabela e destroi o objeto
+If !oBulk == nil
+	oBulk:Close()
+	oBulk:Destroy()
+	FreeObj(oBulk)
+	oBulk := nil
+EndIf
+
+// Log de Processamento
+ConOut("[MATA330] "+dtoc(Date())+" "+Time()+" "+STR0008+" "+cOrdem+" - "+STR0009+cThread) //"MATA330: Termino da Ordem ### - Thread ###"
+
+// STATUS 3 - Processamento efetuado com sucesso
+A330LckGlb("M"+cEmp+cFil+cThread)
+PutGlbValue("M"+cEmp+cFil+cThread,"3")
+A330ULckGlb("M"+cEmp+cFil+cThread)
+
+// Fecha arquivo de controle de semaforo
+fClose(nHd1)
+
+// Apaga arquivo de semaforo
+If File(cJobFile)
+	fErase(cJobFile)
+EndIf
+
+// Fecha a tabela de trabalho TRB
+If Select("TRB") > 0
+	TRB->(dbCloseArea())
+EndIf
+
+// Fecha a tabela de trabalho TRC
+If Select("TRC") > 0
+	TRC->(DBCloseArea())
+EndIf
+
+// Fecha a tabela de trabalho TRX
+If Select('TRX') > 0
+	TRX->(dbCloseArea())
+EndIf
+
+//Fecha a tabela de trabalho TRT
+If Select('TRT') > 0
+	TRT->(dbCloseArea())
+EndIf
+
+Return
+
+/*/{Protheus.doc} CriaSB2Unif
+	Cria uma tabela temporia para o processamento dos produtos de custo unificado.
+	@type  Function
+	@author reynaldo
+	@since 26/02/2021
+	@version 1.0
+	@param cCampo, caracter, Nome do campo a ser pesquisado
+	@param aTamSX3, array, Array statico declarado no fonte onde ocorre a chamada desta funcao.
+/*/
+Static Function CriaSB2Unif(aSB2Fields)
+Local oTempTable
+Local cAlias
+Local aFields
+Local aStruField
+Local nCnt
+
+	cAlias := CriaTrab(NIL,.F.)
+	aFields := {}
+
+	For nCnt := 1 to len(aSB2Fields)
+		cSX3Campo := aSB2Fields[nCnt]
+		aStruField := FWSX3Util():GetFieldStruct(cSX3Campo)
+		aadd(aFields,aStruField)
+	Next nCnt
+
+	//-------------------
+	//Criação do objeto
+	//-------------------
+	oTempTable := FWTemporaryTable():New( cAlias )
+	//--------------------------
+	//Monta os campos da tabela
+	//--------------------------
+	oTempTable:SetFields( aFields )
+
+	//--------------------------
+	//Monta os indices da tabela
+	//--------------------------
+	oTempTable:AddIndex("01", {"B2_FILIAL","B2_COD","B2_LOCAL"} )
+
+	//------------------
+	//Criação da tabela
+	//------------------
+	oTempTable:Create()
+
+	FWFreeArray(aFields)
+	FWFreeArray(aStruField)
+
+Return oTempTable
+
+/*
+ÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜ
+±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±
+±±ÚÄÄÄÄÄÄÄÄÄÄÂÄÄÄÄÄÄÄÄÄÄÂÄÄÄÄÄÄÄÂÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÂÄÄÄÄÄÄÂÄÄÄÄÄÄÄÄÄÄ¿±±
+±±³Fun‡…o    ³ A330TT2B2³ Autor ³TOTVS S.A.             ³ Data ³ 26/12/11 ³±±
+±±ÃÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÁÄÄÄÄÄÄÄÁÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÁÄÄÄÄÄÄÁÄÄÄÄÄÄÄÄÄÄ´±±
+±±³Descri‡ao ³ Atualiza os saldos do SB2 baseado no TRT                   ³±±
+±±ÃÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´±±
+±±³Parametros³ lThread    - Indica se a funcao sera utilizada via Job     ³±±
+±±³          ³ cEmp       - Codigo da Empresa Corrente                    ³±±
+±±³          ³ cFil       - Codigo da Filial Corrente                     ³±±
+±±³          ³ aThreads   - Array que contem o produto inicio/fim         ³±±
+±±³          ³ cThread    - Numero da Thread em execucao                  ³±±
+±±³          ³ lExistProc - Indica se ira executar com Stored Procedures  ³±±
+±±³          ³ cNomTRT    - Nome fisico da tabela TRT                     ³±±
+±±³          ³ cNomTrbU1  - DESCONTINUADO							      ³±±
+±±³          ³ lCstPart   - Indica se processa o custo em partes          ³±±
+±±³          ³ aRegraCP   - Array que contem a regra do custo em partes   ³±±
+±±³          ³ lCusEmp    - Indica se processa o custo por Empresa        ³±±
+±±³          ³ lCusFil    - Indica se processa o custo por Filial         ³±±
+±±³          ³ lFiltraUnif- Indica se utiliza o P.E. MA330UNI             ³±±
+±±ÃÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´±±
+±±³ Uso      ³ MATA330                                                    ³±±
+±±ÀÄÄÄÄÄÄÄÄÄÄÁÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ±±
+±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±
+ßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßß
+*/
+Function A330TT2B2(lThread,cEmp,cFil,aThreads,cJobFile,cThread,lExistProc,cNomTRT,cNomTrbU1,lCstPart,aRegraCP,lCusEmp,lCusFil,lFiltraUnif,lProcREA,cNomTR2)
+Local aDifs        := {0,0,0,0,0}
+Local aCMHist      := {0,0,0,0,0}
+Local _aDifsPartes := {}
+Local _aPartesHist := {}
+
+Local lCusZero     := .F.
+Local lPropCP      := .F.
+Local lProdMOD     := .F.
+
+Local _nLoop1      := 0
+Local _nLoop2      := 0
+Local nValor       := 0
+Local nPosicao     := 0
+Local nPosB2_CP
+Local nValFim      := 0
+Local nQtdFim      := 0
+Local nHd1         := 0
+Local nQtd         := 0
+
+Local cAliasSB2    := ""
+Local cMoeda330C   := ""
+
+Local cCampo       := ""
+Local cQuery       := ""
+Local cNewQuery    := ""
+Local nValorGet    := 0
+Local nx           := 0
+Local aCMZero      := {}
+Local _aHistUniCP  := {}
+Local lUtilProp    := .F.
+Local cTableSB2
+Local oPrepStat
+Local lProgress
+Local aFields
+Local cUpdAlias
+Local lTempTable
+Local cTypeDB
+Local cQryFields
+Local cUpdFields
+
+Static __oSB2CstUnif
+Static __lEstcVLib
+
+Default lThread    := .F.
+Default lFiltraUnif:= .F.
+Default lProcREA   := .F.
+
+
+If cEmp=="##QUIT##"
+
+	If __oSB2CstUnif <> NIL
+		// fecha a tabela temporaria
+		__oSB2CstUnif:Delete()
+		FreeObj(__oSB2CstUnif)
+	EndIf
+Else
+
+	If lThread
+
+		// Log de Processamento
+		ConOut("[MATA330] "+dtoc(Date())+" "+Time()+I18N(STR0015,{cThread})) // " MATA330: Processando A330TT2B2 - Thread #1[1]#"
+
+		// Apaga arquivo ja existente
+		If File(cJobFile)
+			fErase(cJobFile)
+		EndIf
+
+		// Criacao do arquivo de controle de jobs
+		nHd1 := MSFCreate(cJobFile)
+
+		// STATUS 1 - Iniciando execucao do Job
+		A330LckGlb("cUNI"+cEmp+cFil+cThread)
+
+		// Seta job para empresa filial desejada
+		cFilant := cFil
+
+		// STATUS 2 - Conexao efetuada com sucesso
+		PutGlbValue("cUNI"+cEmp+cFil+cThread, "2" )
+		A330ULckGlb("cUNI"+cEmp+cFil+cThread)
+
+		// Abre a tabela de trabalho para Custo Unificado
+		dbUseArea( .T.,"TOPCONN",cNomTRT,"TRT",.T.)
+		nZ := Len(GetTRTStru(NIL,NIL,2))
+		For nX := 1 To nZ
+			dbSetIndex(cNomTRT +StrZero(nX,2))
+		Next nX
+		dbSetOrder(1)
+
+		//Troca o Alias SB2 para a tabela alternativa
+		If 'TR2' $ cNomTR2
+			A330AbreB2(cNomTR2)
+		EndIf
+
+		cMoeda330C := SuperGetMV('MV_MOEDACM',.F.,"2345")
+
+	EndIf
+
+	cUpdAlias := "SB2"
+	lCusZero   := SuperGetMV("MV_CUSZERO",.F.,"N") == "S"
+	lPropCP    := SuperGetMV("MV_PROPCP",.F.,.F.)
+	cTableSB2  := cNomTR2
+	cAliasSB2  := GetNextAlias()
+	cSB2Filial := xFilial("SB2")
+
+	dbSelectArea("TRT")
+	If !lProcREA
+		If lCusEmp
+			dbGoTop()
+		Else
+			If lThread
+				dbSeek(cFil+aThreads[1],.T.) //TRT_FILIAL+TRT_COD
+			Else
+				dbSeek(cFilAnt)
+			EndIf
+		EndIf
+	Else
+		Reclock("TRT",.F.)
+		TRT->TRB_PRCREA := .T.
+		TRT->(MsUnlock())
+	EndIf
+
+	cTypeDB := TCGETDB()
+	If "MSSQL" $ cTypeDB .OR. "ORACLE" $ cTypeDB
+		lTempTable := .T.
+		If lProcREA
+			lTempTable := .F.
+		Else
+			If lThread
+				If lFiltraUnif
+					lTempTable := .F.
+				EndIf
+			Else
+				lTempTable := .F.
+			EndIf
+		EndIf
+	ELSE
+		lTempTable := .F.
+	EndIf
+
+	If lTempTable
+
+		aFields := {}
+		aAdd(aFields, "B2_FILIAL")
+		aAdd(aFields, "B2_COD"   )
+		aAdd(aFields, "B2_LOCAL" )
+		aAdd(aFields, "B2_QFIM"  )
+		aAdd(aFields, "B2_VFIM1" )
+		aAdd(aFields, "B2_VFIM2" )
+		aAdd(aFields, "B2_VFIM3" )
+		aAdd(aFields, "B2_VFIM4" )
+		aAdd(aFields, "B2_VFIM5" )
+		aAdd(aFields, "B2_CMFIM1")
+		aAdd(aFields, "B2_CMFIM2")
+		aAdd(aFields, "B2_CMFIM3")
+		aAdd(aFields, "B2_CMFIM4")
+		aAdd(aFields, "B2_CMFIM5")
+		//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+		//³ Adiciona atualizacao do valores do Custo em Partes   ³
+		//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+		If lCstPart
+			For _nLoop1:=1 to Len(aRegraCP)+1
+				For _nLoop2:=1 to 5
+					// Verifica se moeda devera ser considerada
+					If _nLoop2 # 1 .And. !(Str(_nLoop2,1,0) $ cMoeda330C)
+						Loop
+					EndIf
+					cCampo := "B2_CPF"+Strzero(_nLoop1,2,0)+Strzero(_nLoop2,2,0)
+					aAdd(aFields, cCampo)
+					cCampo := "B2_CP"+Strzero(_nLoop1,2,0)+Strzero(_nLoop2,2,0)
+					aAdd(aFields, cCampo)
+				Next _nLoop2
+			Next _nLoop1
+		EndIf
+		cQryFields := ""
+
+		// monta os campos para serem usados nas querys
+		For _nLoop1 := 1 to len(aFields)
+			cQryFields += aFields[_nLoop1] + " ,"
+		Next _nLoop1
+		cQryFields := left(cQryFields, len(cQryFields)-1)
+
+		If __oSB2CstUnif == NIL
+			__oSB2CstUnif := CriaSB2Unif(aFields)
+		EndIf
+
+		cTableSB2 := __oSB2CstUnif:GetRealName()
+		cUpdAlias := __oSB2CstUnif:GetAlias()
+
+		cQrySelect := ""
+		cQrySelect += "SELECT "
+		cQrySelect += cQryFields
+		cQrySelect += "FROM " +cNomTR2+ " SB2 "
+
+		cQrySelect += "INNER JOIN " + cNomTRT + " TRT "
+		cQrySelect += "ON "
+		If lCusFil
+			cQrySelect += "TRT.TRB_FILIAL = '" +cFilant+ "' AND "
+		EndIf
+		If lThread
+			cQrySelect += " TRT.TRB_COD >= '" +aThreads[1]+ "' AND  "
+			cQrySelect += " TRT.TRB_COD <= '" +aThreads[2]+ "' AND "
+		EndIf
+		cQrySelect += " SB2.B2_COD = TRT.TRB_COD AND TRT.D_E_L_E_T_ = ' ' "
+
+		cQrySelect += "WHERE "
+		If lCusFil
+			cQrySelect += "SB2.B2_FILIAL = '" +cSB2Filial+ "' AND "
+		EndIf
+		cQrySelect += " SB2.D_E_L_E_T_ = ' ' "
+		cQrySelect := ChangeQuery(cQrySelect)
+
+		cQuery := "INSERT INTO "
+		cQuery += cTableSB2
+		cQuery += " ( "
+		cQuery += cQryFields
+		cQuery +=" ) "
+		cQuery += cQrySelect
+
+		If TcSqlExec(cQuery) < 0
+			UserException( STR0021 +TCSQLError() ) // "Falha na seleç?o dos produto para o custo unificado: "
+		EndIf
+
+	Else
+
+		cTableSB2 := cNomTR2
+		cUpdAlias := "SB2"
+
+	EndIf
+
+	If !lThread .And. !lBat
+		ProcRegua(SB1->(LastRec()),16,4)
+	EndIf
+
+	lProgress := !lThread .And. !lBat .And. !IsBlind() .And. !lProcREA
+
+	While TRT->(!Eof()) .And. IIf(lCusEmp,.T.,IIf(lThread,!KillApp() .And. TRT->TRB_FILIAL==cFil .And. TRT->TRB_COD <= aThreads[2],TRT->TRB_FILIAL == cFilAnt))
+		//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+		//³ Movimentacao do Cursor                                    ³
+		//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+		If lProgress
+			IncProc(IIf(lCusFil,STR0011,STR0010)) //Acertando o Custo Unificado por Filial/Empresa
+		EndIf
+		//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+		//³ Preenche array com valor total do produto na filial  ³
+		//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+		aDifs[1] := TRT->TRB_VFIM1
+		aDifs[2] := TRT->TRB_VFIM2
+		aDifs[3] := TRT->TRB_VFIM3
+		aDifs[4] := TRT->TRB_VFIM4
+		aDifs[5] := TRT->TRB_VFIM5
+
+		//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+		//³ Verifica se o produto e mao-de-obra                  ³
+		//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+		lProdMOD := IsProdMod(TRT->TRB_COD,.T.)
+
+		aCMHist      := {} // Reinicia Array com Custo Medio Historico
+		_aDifsPartes := {} // Reinicia Array com a Diferenca do custo em partes
+		_aPartesHist := {} // Reinicia Array com Custo Medio Historico em Partes
+		_aHistUniCP  := {} // Reinicia Array com Custo Unitario Historico em partes
+		lUtilProp    := .F. // Utilizar calculo de proporcao para valores unitarios negativos
+		//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+		//³ Preenche array com valores do custo unitario         ³
+		//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+		For nX :=1 to Len(aDifs)
+			If QtdComp(TRT->TRB_QFIM) > QtdComp(0) .And. QtdComp(&("TRT->TRB_VFIM"+StrZero(nX,1,0))) > QtdComp(0)
+
+				nQtd := aDifs[nx] / TRT->TRB_QFIM
+				If lProdMOD
+					nQtd := ABS(nQtd)
+				EndIf
+				AADD(aCMHist,nQtd)
+
+			Else
+				AADD(aCMHist, &( "TRT->TRB_CM"+StrZero(nX,1) ) )
+			EndIf
+		Next nx
+
+		//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+		//³ Preenche array com valor total e valor unitario do custo em partes ³
+		//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+		If lCstPart
+			For _nLoop1:=1 to Len(aRegraCP)+1
+				AADD(_aDifsPartes,ARRAY(5))
+				AADD(_aPartesHist,ARRAY(5))
+				AADD(_aHistUniCP ,ARRAY(5))
+				For _nLoop2:=1 to 5
+					// Verifica se moeda devera ser considerada
+					If _nLoop2 # 1 .And. !(Str(_nLoop2,1,0) $ cMoeda330C)
+						Loop
+					EndIf
+					nValorGet:=TRT->(FIELDGET(FieldPos("TRB_VF"+Strzero(_nLoop1,2,0)+Strzero(_nLoop2,2,0))))
+					_aDifsPartes[_nLoop1,_nLoop2]:=nValorGet
+					If QtdComp(TRT->TRB_QFIM) > QtdComp(0) .And. QtdComp(&("TRT->TRB_VFIM"+StrZero(_nLoop2,1,0))) > QtdComp(0)
+						_aPartesHist[_nLoop1,_nLoop2]:=nValorGet / TRT->TRB_QFIM
+						If lPropCP .And. (nValorGet/TRT->TRB_QFIM) < 0
+							lUtilProp := .T.
+						EndIf
+					Else
+						nValorGet:=TRT->(FIELDGET(FieldPos("TRB_CP"+Strzero(_nLoop1,2,0)+Strzero(_nLoop2,2,0))))
+						_aPartesHist[_nLoop1,_nLoop2]:=nValorGet
+					EndIf
+					If lPropCP
+						nValorGet:=TRT->(FIELDGET(FieldPos("TRB_CP"+Strzero(_nLoop1,2,0)+Strzero(_nLoop2,2,0))))
+						_aHistUniCP[_nLoop1,_nLoop2] :=nValorGet
+					EndIf
+				Next _nLoop2
+			Next _nLoop1
+		EndIf
+
+		//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+		//³ aCMZero - Utilizada para atualizar B2_CMFIM quando o |
+		//|           B2_QFIM for igual ou menor que Zero.       ³
+		//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+		aCMZero := {	IIf(lCusZero .And. !lProdMOD,'0',Alltrim(Str(aCMHist[1]))),;
+							IIf(lCusZero .And. !lProdMOD,'0',Alltrim(Str(aCMHist[2]))),;
+							IIf(lCusZero .And. !lProdMOD,'0',Alltrim(Str(aCMHist[3]))),;
+							IIf(lCusZero .And. !lProdMOD,'0',Alltrim(Str(aCMHist[4]))),;
+							IIf(lCusZero .And. !lProdMOD,'0',Alltrim(Str(aCMHist[5])))	}
+
+		//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+		//³ Montagem da query para atualizacao de valores no SB2 ³
+		//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+		cQuery:=" UPDATE " +cTableSB2+ " SET "
+		cQuery+="  B2_VFIM1 =  (B2_QFIM * " + Alltrim(Str(aCMHist[1]))+")"
+		cQuery+=", B2_VFIM2 =  (B2_QFIM * " + Alltrim(Str(aCMHist[2]))+")"
+		cQuery+=", B2_VFIM3 =  (B2_QFIM * " + Alltrim(Str(aCMHist[3]))+")"
+		cQuery+=", B2_VFIM4 =  (B2_QFIM * " + Alltrim(Str(aCMHist[4]))+")"
+		cQuery+=", B2_VFIM5 =  (B2_QFIM * " + Alltrim(Str(aCMHist[5]))+")"
+		cQuery+=", B2_CMFIM1 = CASE WHEN B2_QFIM > 0 THEN " + Alltrim(Str(aCMHist[1]))+ " ELSE " + aCMZero[1] + " END"
+		cQuery+=", B2_CMFIM2 = CASE WHEN B2_QFIM > 0 THEN " + Alltrim(Str(aCMHist[2]))+ " ELSE " + aCMZero[2] + " END"
+		cQuery+=", B2_CMFIM3 = CASE WHEN B2_QFIM > 0 THEN " + Alltrim(Str(aCMHist[3]))+ " ELSE " + aCMZero[3] + " END"
+		cQuery+=", B2_CMFIM4 = CASE WHEN B2_QFIM > 0 THEN " + Alltrim(Str(aCMHist[4]))+ " ELSE " + aCMZero[4] + " END"
+		cQuery+=", B2_CMFIM5 = CASE WHEN B2_QFIM > 0 THEN " + Alltrim(Str(aCMHist[5]))+ " ELSE " + aCMZero[5] + " END"
+		//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+		//³ Adiciona atualizacao do valores do Custo em Partes   ³
+		//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+		If lCstPart
+			For _nLoop1:=1 to Len(aRegraCP)+1
+				For _nLoop2:=1 to 5
+					// Verifica se moeda devera ser considerada
+					If _nLoop2 # 1 .And. !(Str(_nLoop2,1,0) $ cMoeda330C)
+						Loop
+					EndIf
+					cCampo:="B2_CPF"+Strzero(_nLoop1,2,0)+Strzero(_nLoop2,2,0)
+					cQuery+=", "+cCampo+" = (B2_QFIM * "+Alltrim(Str(_aPartesHist[_nLoop1,_nLoop2]))+")"
+					cCampo:="B2_CP"+Strzero(_nLoop1,2,0)+Strzero(_nLoop2,2,0)
+					cQuery+=", "+cCampo+" = CASE WHEN B2_QFIM > 0 THEN "
+					If lUtilProp
+						cQuery+= Alltrim(Str(_aHistUniCP[_nLoop1,_nLoop2]))
+						cQuery+= " ELSE "
+						cQuery+= IIf(lCusZero .And. !lProdMOD,"0",Alltrim(Str(_aHistUniCP[_nLoop1,_nLoop2])) )
+						cQuery+= " END"
+					Else
+						cQuery+= Alltrim(Str(_aPartesHist[_nLoop1,_nLoop2]))
+						cQuery+= " ELSE "
+						cQuery+= IIf(lCusZero .And. !lProdMOD,"0",Alltrim(Str(_aPartesHist[_nLoop1,_nLoop2])) )
+						cQuery+= " END"
+					EndIf
+				Next _nLoop2
+			Next _nLoop1
+		EndIf
+		cQuery += " WHERE "
+		If lCusFil
+			cQuery += "B2_FILIAL = '" +cSB2Filial+ "' AND "
+		EndIf
+		cQuery += "B2_COD = '"+TRT->TRB_COD+"' AND D_E_L_E_T_ = ' ' "
+
+		//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+		//³ MA330UNI - Ponto de Entrada para Manipular a Query de Aglutinacao de Custo ³
+		//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+		If lFiltraUnif
+			cNewQuery:=ExecBlock("MA330UNI",.F.,.F.,{TRT->TRB_FILIAL,TRT->TRB_COD,cQuery})
+			If ValType(cNewQuery) == "C"
+				cQuery := cNewQuery
+			EndIf
+		EndIf
+
+		//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+		//³ Execucao da query para atualizacao de valores no SB2 ³
+		//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+		If TcSqlExec(cQuery) < 0
+			UserException( STR0019+TCSQLError() ) // "Falha na atualização do saldo atual dos produtos para o custo unificado: "
+		EndIf
+
+		dbSelectArea(cUpdAlias)
+		MSGoto(Recno()) //-- Reposiciona na tabela/registro atual somente para atualizar gravacoes pendentes
+
+		//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+		//³ Montagem da query para encontrar possiveis restos por arredondamento  ³
+		//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+		__lEstcVLib	:= If(__lEstcVLib == NIL,FWLibVersion() >= "20211116",__lEstcVLib)
+
+		If oPrepStat == NIL
+			cQuery:= "SELECT SUM(B2_VFIM1) TOTCM1,SUM(B2_VFIM2) TOTCM2,SUM(B2_VFIM3) TOTCM3,SUM(B2_VFIM4) TOTCM4,SUM(B2_VFIM5) TOTCM5"
+			If lCstPart
+				For _nLoop1:=1 to Len(aRegraCP)+1
+					For _nLoop2:=1 to 5
+						// Verifica se moeda devera ser considerada
+						If _nLoop2 # 1 .And. !(Str(_nLoop2,1,0) $ cMoeda330C)
+							Loop
+						EndIf
+						cCampo:="B2_CPF"+Strzero(_nLoop1,2,0)+Strzero(_nLoop2,2,0)
+						cQuery+=", SUM("+cCampo+") TOTCP"+Strzero(_nLoop1,2,0)+Strzero(_nLoop2,2,0)
+					Next _nLoop2
+				Next _nLoop1
+			EndIf
+			cQuery += " FROM "+cTableSB2+" WHERE "
+			If lCusFil
+				cQuery += "B2_FILIAL = '" +cSB2Filial+ "' AND "
+			EndIf
+			cQuery += "B2_COD = ? AND D_E_L_E_T_ = ' ' "
+			cQuery := ChangeQuery(cQuery)
+
+			If __lEstcVLib
+				oPrepStat := FwExecStatement():New(cQuery)
+			Else
+				oPrepStat := FWPreparedStatement():New(cQuery)
+			EndIf
+
+		EndIf
+
+		oPrepStat:SetString(  1 ,TRT->TRB_COD)
+
+		//Recupera a consulta já com os parâmetros injetados
+		cQuery := oPrepStat:getFixQuery()
+
+		//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+		//³ MA330UNI - Ponto de Entrada para Manipular a Query de Aglutinacao de Custo ³
+		//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+		If lFiltraUnif
+			cNewQuery:=ExecBlock("MA330UNI",.F.,.F.,{TRT->TRB_FILIAL,TRT->TRB_COD,cQuery})
+			If ValType(cNewQuery) == "C"
+				cQuery := cNewQuery
+				cQuery := ChangeQuery(cQuery)
+			EndIf
+		EndIf
+
+		MpSysOpenQuery(cQuery,cAliasSB2)
+
+		dbSelectArea(cAliasSB2)
+		If !Eof()
+			//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+			//³ Acertos de diferencas de valores encontradas nos custos |
+			//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+			If	QtdComp(TOTCM1) # QtdComp(aDifs[1]) .Or. ;
+				QtdComp(TOTCM2) # QtdComp(aDifs[2]) .Or. ;
+				QtdComp(TOTCM3) # QtdComp(aDifs[3]) .Or. ;
+				QtdComp(TOTCM4) # QtdComp(aDifs[4]) .Or. ;
+				QtdComp(TOTCM5) # QtdComp(aDifs[5])
+
+				dbSelectArea(cUpdAlias)
+				dbSetOrder(1)
+				If MsSeek(cSB2Filial+TRT->TRB_COD)
+					RecLock(cUpdAlias,.F.)
+					(cUpdAlias)->B2_VFIM1 += (aDifs[1] - (cAliasSB2)->TOTCM1)
+					(cUpdAlias)->B2_VFIM2 += (aDifs[2] - (cAliasSB2)->TOTCM2)
+					(cUpdAlias)->B2_VFIM3 += (aDifs[3] - (cAliasSB2)->TOTCM3)
+					(cUpdAlias)->B2_VFIM4 += (aDifs[4] - (cAliasSB2)->TOTCM4)
+					(cUpdAlias)->B2_VFIM5 += (aDifs[5] - (cAliasSB2)->TOTCM5)
+					//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+					//³ Recalcula o CM unitario com os valores atualizados      |
+					//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+					For _nLoop1:=1 to 5
+						// Verifica se moeda devera ser considerada
+						If _nLoop1 # 1 .And. !(Str(_nLoop2,1,0) $ cMoeda330C)
+							Loop
+						EndIf
+						nPosicao:=FieldPos("B2_CMFIM"+Str(_nLoop1,1))
+						nValFim :=FieldGet(FieldPos("B2_VFIM"+Str(_nLoop1,1)))
+						nQtdFim :=FieldGet(FieldPos("B2_QFIM"))
+						If nValFim > 0 .And. nQtdFim > 0
+							FieldPut(nPosicao,nValfim/nQtdFim)
+						ElseIf lCusZero .And. !lProdMOD
+							FieldPut(nPosicao,0)
+						Else
+							FieldPut(nPosicao,aCMHist[_nLoop1])
+						EndIf
+					Next _nLoop1
+					//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+					//³ Acertos de diferencas de valores Custo em Partes        |
+					//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+					If lCstPart
+						For _nLoop1:=1 to Len(aRegraCP)+1
+							For _nLoop2:=1 to 5
+								// Verifica se moeda devera ser considerada
+								If _nLoop2 # 1 .And. !(Str(_nLoop2,1,0) $ cMoeda330C)
+									Loop
+								EndIf
+								nPosicao:=FieldPos("B2_CPF"+Strzero(_nLoop1,2,0)+Strzero(_nLoop2,2,0))
+								nValor  :=FieldGet(nPosicao)
+								FIELDPUT(nPosicao,nValor+(_aDifsPartes[_nLoop1,_nLoop2] - &((cAliasSB2)+"->(TOTCP"+Strzero(_nLoop1,2,0)+Strzero(_nLoop2,2,0)+")") ) )
+								nValor:=FieldGet(nPosicao)
+
+								nPosB2_CP := FieldPos("B2_CP"+Strzero(_nLoop1,2,0)+Strzero(_nLoop2,2,0))
+								If (cUpdAlias)->B2_QFIM > 0 .And. QtdComp(&("(cUpdAlias)->B2_VFIM"+StrZero(_nLoop2,1,0))) > QtdComp(0)
+									FIELDPUT(nPosB2_CP,IIf(lUtilProp,_aHistUniCP[_nLoop1,_nLoop2],nValor/(cUpdAlias)->B2_QFIM))
+								ElseIf lCusZero .And. !lProdMOD
+									FIELDPUT(nPosB2_CP,0)
+								Else
+									FIELDPUT(nPosB2_CP,IIf(lUtilProp,_aHistUniCP[_nLoop1,_nLoop2],_aPartesHist[_nLoop1,_nLoop2]))
+								EndIf
+							Next _nLoop2
+						Next _nLoop1
+					EndIf
+					(cUpdAlias)->(MsUnLock())
+				EndIf
+			EndIf
+		EndIf
+		//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+		//³ Finaliza o arquivo de trabalho                       ³
+		//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+		(cAliasSB2)->(dbCloseArea())
+
+		If lProcREA
+			Exit
+		EndIf
+
+		//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+		//³ Muda para o proximo produto totalizado               ³
+		//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+		dbSelectArea("TRT")
+		dbSkip()
+	EndDo
+
+	If oPrepStat <> NIL
+		oPrepStat:Destroy()
+	EndIf
+
+	If lTempTable
+
+		If "MSSQL" $ cTypeDB
+			cQuery := "UPDATE " +cNomTR2+ " SET "
+
+			// monta os campos para serem usados nas querys
+			cQryFields := ""
+			For _nLoop1 := 4 to len(aFields)
+				cQryFields += " "+aFields[_nLoop1] + " "
+				cQryFields += " = "
+				cQryFields += " TMP."+aFields[_nLoop1] + " ,"
+			Next _nLoop1
+			cQryFields := left(cQryFields, len(cQryFields)-1)
+
+			cQuery += cQryFields
+			cQuery += " FROM "
+			cQuery += " "+cNomTR2+ " SB2 "
+			cQuery += " INNER JOIN "
+			cQuery += " "+cTableSB2+ " TMP "
+			cQuery += " ON SB2.B2_FILIAL = TMP.B2_FILIAL "
+			cQuery += " AND SB2.B2_COD = TMP.B2_COD "
+			cQuery += " AND SB2.B2_LOCAL = TMP.B2_LOCAL "
+			cQuery += " AND SB2.D_E_L_E_T_ = ' ' "
+
+		ELSEIF cTypeDB $ "ORACLE"
+
+			cQryFields := ""
+			cUpdFields := ""
+
+			For _nLoop1 := 1 to len(aFields)
+				cQryFields += "TMPSB2."+aFields[_nLoop1] + " ,"
+				If _nLoop1 > 3
+					cUpdFields += "SB2."+aFields[_nLoop1] + " = TEMP."+aFields[_nLoop1] + " ,"
+				EndIf
+			Next _nLoop1
+			cQryFields := left(cQryFields, len(cQryFields)-1)
+			cUpdFields := left(cUpdFields, len(cUpdFields)-1)
+
+			cQuery := "MERGE INTO " +cNomTR2+ " SB2 "
+			cQuery += "USING ( "
+			cQuery += " SELECT "
+			cQuery += cQryFields
+			cQuery += " FROM "+cTableSB2+ " TMPSB2) TEMP "
+			cQuery += "ON ("
+			cQuery += " SB2.B2_FILIAL = TEMP.B2_FILIAL "
+			cQuery += " AND SB2.B2_COD = TEMP.B2_COD "
+			cQuery += " AND SB2.B2_LOCAL = TEMP.B2_LOCAL "
+			cQuery += " AND SB2.D_E_L_E_T_ = ' ' ) "
+			cQuery += "WHEN MATCHED THEN "
+			cQuery += "UPDATE SET "
+			cQuery += cUpdFields
+
+		ENDIF
+
+		If TcSqlExec(cQuery) < 0
+			UserException( STR0020 +TCSQLError() ) //"Falha na atualização do custo unificado na tabela SB2: "
+		EndIf
+
+	EndIf
+
+	If lThread
+
+		If lTempTable
+			If __oSB2CstUnif <> NIL
+				cQuery := "TRUNCATE TABLE " + __oSB2CstUnif:GetRealName()
+				If TcSqlExec(cQuery) < 0
+					UserException( STR0020 +TCSQLError() ) //"Falha na atualização do custo unificado na tabela SB2: "
+				EndIf
+			EndIf
+		EndIf
+
+		// STATUS 3 - Processamento efetuado com sucesso
+		A330LckGlb("cUNI"+cEmp+cFil+cThread)
+		PutGlbValue("cUNI"+cEmp+cFil+cThread,"3")
+		A330ULckGlb("cUNI"+cEmp+cFil+cThread)
+
+		// Fecha arquivo de controle de semaforo
+		fClose(nHd1)
+
+		// Apaga arquivo de semaforo
+		If File(cJobFile)
+			fErase(cJobFile)
+		EndIf
+
+		// Fecha a tabela de trabalho
+		If Select("TRT") > 0
+			TRT->(dbCloseArea())
+		EndIf
+
+		// Log de Processamento
+		ConOut("[MATA330] "+dtoc(Date())+" "+Time()+I18N(STR0016,{cThread})) // " MATA330: Finalizado A330TT2B2 - Thread #1[1]#"
+
+	Else
+		If lTempTable
+			// fecha a tabela temporaria
+			__oSB2CstUnif:Delete()
+			FreeObj(__oSB2CstUnif)
+			__oSB2CstUnif := NIL
+		EndIf
+	EndIf
+ENDIF
+
+Return
+
+/*
+ÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜ
+±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±
+±±ÚÄÄÄÄÄÄÄÄÄÄÂÄÄÄÄÄÄÄÄÄÄÄÂÄÄÄÄÄÄÄÂÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÂÄÄÄÄÄÄÂÄÄÄÄÄÄÄÄÄÄ¿±±
+±±³Fun‡ao    ³M330JCTB_V ³ Autor ³ Totvs S/A            ³ Data ³ 15/05/07 ³±±
+±±ÃÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÁÄÄÄÄÄÄÄÁÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÁÄÄÄÄÄÄÁÄÄÄÄÄÄÄÄÄÄ´±±
+±±³Descri‡…o ³ Funcao utilizada para verificar a ultima versao do fonte   ³±±
+±±³			 ³ M330JCTB.PRW aplicado no rpo do cliente, assim verificando ³±±
+±±³			 ³ a necessidade de uma atualizacao neste fonte.              ³±±
+±±ÃÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´±±
+±±³Parametros³ NENHUM                                                     ³±±
+±±ÃÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´±±
+±±³Retorno   ³ ExpN1 = Numero formado pela data em que o M330JCTB foi     ³±±
+±±³          ³         atualizado, SEMPRE no formato AAAAMMDD             ³±±
+±±ÃÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´±±
+±±³ Uso      ³ EST/PCP/FAT/COM	                                          ³±±
+±±ÀÄÄÄÄÄÄÄÄÄÄÁÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ±±
+±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±
+ßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßß*/
+Function M330JCTB_V()
+Return 20141209 //-- Indica que a ultima atualizacao feita em 19/06/2013
+
+/*/{Protheus.doc} M330TJOBCONNECT - Executa a funcao M330TJOB para transferencia entre filiais
+@author reynaldo
+@since 28/10/2021
+@version 1.0
+@return nulo
+/*/
+Function M330TJOBCONNECT(cEmp,cFil,aDataProc,cJobFile,cThread,cNomTrb,cIndTrb1,cIndTrb2,cIndTrb3,cIndTrb4,cIndTrb5,cIndTrb6,cLocalCQ,nOrderFIFO,lExistProc,lHabCon330,cListaFil,cNomTR2)
+LOCAL cGlbName
+LOCAL cThisThread
+
+	If cEmp=="##QUIT##"
+		cThisThread := cValToChar(ThreadId())
+		cGlbName := "cThrWrk"+cThisThread // define o nome da variavel global
+		ClearGlbValue(cGlbName)
+		killapp(.T.)
+	ELSE
+		cGlbName  := "cThrWrk"+cValToChar(ThreadId())
+		A330LckGlb(cGlbName)
+		PutGlbValue(cGlbName,"1")
+		A330ULckGlb(cGlbName)
+		M330TJOB(cEmp,cFil,aDataProc,cJobFile,cThread,cNomTrb,cIndTrb1,cIndTrb2,cIndTrb3,cIndTrb4,cIndTrb5,cIndTrb6,cLocalCQ,nOrderFIFO,lExistProc,lHabCon330,cListaFil,cNomTR2)
+	Endif
+	A330LckGlb(cGlbName)
+	PutGlbValue(cGlbName,"0")
+	A330ULckGlb(cGlbName)
+RETURN
+
+/*/{Protheus.doc} M330PrcLog
+	Encapsula chamada da ProcLogAtu para garantir gravação da filial da CV8 com a filial
+	que está executando o processo.
+	@type  Function
+	@author squad_entradas
+	@since 04/09/2020
+	@version 1.0
+	@param cTipo, caracter, tipo do log a ser gerado
+	@param cTexto, caracter, mensagem a ser gravada no log gerado
+	@param cDetalhe, caracter, detalhe a ser gravado para o log gerado
+/*/
+Function M330JCTBLog(cTipo,cTexto,cDetalhe,a330ParamZX,cFilBack)
+
+Default cFilBack := cFilAnt
+
+oJourneyLog:LogProAtu(cTipo,cTexto,cDetalhe,cFilBack, , a330ParamZX[1], cFilAnt)
+
+Return
+
+Function A330CTBLegacy()
+
+Return getLegacy()
