@@ -1,0 +1,75 @@
+[config]
+lastmainprog=SIGAADV
+envserver=cklxrp_dev
+BrowserEnabled=0
+latencylog=1 
+
+[drivers]
+active=tcp,monitor,exclusivo,wf,mac,tds,wssoap,wsrest,portal,coletor
+
+[tcp]
+server=metalurgicastori135780.protheus.cloudtotvs.com.br
+port=2351
+BrokerProxy=1
+
+[monitor]
+server=metalurgicastori135780.protheus.cloudtotvs.com.br
+port=2366
+
+[exclusivo]
+server=metalurgicastori135780.protheus.cloudtotvs.com.br
+port=2360
+
+[wf]
+server=metalurgicastori135780.protheus.cloudtotvs.com.br
+port=2361
+
+[mac]
+server=metalurgicastori135780.protheus.cloudtotvs.com.br
+port=2373
+
+[tds]
+server=metalurgicastori135780.protheus.cloudtotvs.com.br
+port=2373
+
+[wssoap]
+server=metalurgicastori135780.protheus.cloudtotvs.com.br
+port=6300
+
+[wsrest]
+server=metalurgicastori135780.protheus.cloudtotvs.com.br
+port=2369
+
+[portal]
+server=metalurgicastori135780.protheus.cloudtotvs.com.br
+port=2371
+
+[coletor]
+server=metalurgicastori135780.protheus.cloudtotvs.com.br
+port=6600
+
+user: admin
+Imes#cvb@@
+
+08/02 - 14:15 a 14:30 - IMES
+1) Problema de travamento no MATA330 - A330TT2B2(2829)
+2) Direcionamento da analise
+
+Data : 29/01/2024 , Hora: 15:24:45
+Arquivo: TRT
+
+Called from A330TT2B2(2829)
+Called from A330AJCUSTO(11618)
+Called from A330RECALC(5401)
+Called from MA330PROCESS(1443)
+Called from {|LEND|MA330PROCESS(ALISTAFIL,LBAT,@LEND,NRATEIOFROTA,NRATEIOVEICULO,NRATEIOVIAGEM,LEXISTPROC,L331X330)}(437)
+Called from {|| FWSETSHOWKEYS( .F. ), EVAL( BACTION, @LEND ),LEND := .T. , FWSETSHOWKEYS( .T. ), ODLGMODAL:DEACTIVATE() }(104)
+Called from {|SELF|(EVAL(OSELF:BINIT))}(462)
+Called from ACTIVATE(0)
+Called from AC
+
+09/02 - 00:45 a 12:00
+1) Analise do fonte e tentativa de conexão
+2) Alterar o parametro MV_A330GRV
+
+42524334000104
