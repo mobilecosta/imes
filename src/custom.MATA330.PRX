@@ -304,7 +304,7 @@ If AMIIn(4,12,44)
 		EndIf
 		OJOURNEYLOG:envValid(lJourney)
 	else
-		Help(" ",1,"NOTATU",,"STR"",02,01)
+		Help(" ",1,"NOTATU",,"STR",02,01)
 		Return Nil
 	EndIf
 	// Mesma funcionalidade do ProcLogIni
@@ -392,7 +392,7 @@ If AMIIn(4,12,44)
 				BatchProcess(OemToAnsi("STR"),OemToAnsi("STR")+OemToAnsi("STR")+OemToAnsi("STR")+DTOC(dInicio),"MTA330",{ || Processa({|lEnd| MA330Process(aListaFil,lBat,@lEnd,,,,lExistProc, l331x330)},OemToAnsi("STR"),OemToAnsi("STR"),.F.)})
 			EndIf
 		Else
-			DEFINE MSDIALOG oDlg FROM  96,9 TO 320,612 TITLE OemToAnsi(STR0007) PIXEL	//"Rec lculo do Custo M‚dio"
+			DEFINE MSDIALOG oDlg FROM  96,9 TO 320,612 TITLE OemToAnsi("STR0007") PIXEL	//"Rec lculo do Custo M‚dio"
 			@ 11,6 TO 90,287 LABEL "" OF oDlg  PIXEL
 			@ 16, 15 SAY OemToAnsi("STR") SIZE 268, 8 OF oDlg PIXEL					//"Este programa permite que o custo m‚dio seja recalculado de trˆs formas diferentes, atendendo"
 			@ 26, 15 SAY OemToAnsi("STR") SIZE 268, 8 OF oDlg PIXEL					//"qualquer exigˆncia legal."
@@ -2029,7 +2029,7 @@ A330Inicia(lExistProc)
 //ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
 //³ Atualiza o log de processamento			                     ³
 //ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
-M330PrcLog("MENSAGEM",OemToAnsi("STR") +STR0067+cFilAnt,OemToAnsi("STR")) //"Gerando Arquivo de Trabalho - SD1"
+M330PrcLog("MENSAGEM",OemToAnsi("STR") +"STR0067"+cFilAnt,OemToAnsi("STR")) //"Gerando Arquivo de Trabalho - SD1"
 
 dbSelectArea("SD1")
 dbSetOrder(6)
@@ -2438,7 +2438,7 @@ dbSetOrder(1)
 //ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
 //³ Atualiza o log de processamento			    ³
 //ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
-M330PrcLog("MENSAGEM",OemToAnsi(STR0083) +STR0067+cFilAnt,OemToAnsi(STR0083)) //"Gerando Arquivo de Trabalho - SD3"
+M330PrcLog("MENSAGEM",OemToAnsi("STR0083") +"STR0067"+cFilAnt,OemToAnsi("STR0083")) //"Gerando Arquivo de Trabalho - SD3"
 
 dbSelectArea("SD3")
 dbSetOrder(6)
@@ -5575,7 +5575,7 @@ While !Eof()
 	ElseIf lM330JCM3 .And. TRB->TRB_ORDEM == '300' .And. Empty(TRB->TRB_SEQPRO) .And. !Empty(TRB->TRB_NIVEL) .And. !Empty(TRB->TRB_NIVSD3) .And. !Empty(TRB->TRB_OP)
 
 		If !lFirstSD3
-			M330PrcLog("MENSAGEM",STR0243+cFilAnt,"STR"+cFilAnt,'6B') //"Analise de movimentos internos - "
+			M330PrcLog("MENSAGEM","STR0243"+cFilAnt,"STR"+cFilAnt,'6B') //"Analise de movimentos internos - "
 			lFirstSD3 := .T.
 		EndIf
 
@@ -6234,7 +6234,7 @@ If (lCusEmp .Or. lCusFil) .And. (	TRT->(FieldPos("TRB_QTDMOD")) <= 0 .Or. ;
 									TRT->(FieldPos("TRB_TOTCM3")) <= 0 .Or. ;
 									TRT->(FieldPos("TRB_TOTCM4")) <= 0 .Or. ;
 									TRT->(FieldPos("TRB_TOTCM5")) <= 0 )
-	Final(OemToAnsi(STR0078)) //"Atualizar MATXFUNA.PRX!!!"
+	Final(OemToAnsi("STR0078")) //"Atualizar MATXFUNA.PRX!!!"
 EndIf
 
 if cMoeda330C == NIL
@@ -6745,7 +6745,7 @@ EndIf
 //ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
 //³ Atualiza o log de processamento			    ³
 //ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
-M330PrcLog("MENSAGEM",OemToAnsi("STR") +STR0067+cFilAnt,OemToAnsi("STR")) //"Termino da Recuperacao dos Saldos do Inicio do Periodo"
+M330PrcLog("MENSAGEM",OemToAnsi("STR") +"STR0067"+cFilAnt,OemToAnsi("STR")) //"Termino da Recuperacao dos Saldos do Inicio do Periodo"
 
 Return
 
@@ -6848,7 +6848,7 @@ EndIf
 
 If lRet
 	//-- Atualiza o log de processamento
-	M330PrcLog("MENSAGEM",OemToAnsi("STR") +STR0067+cFilAnt,OemToAnsi("STR"), '2') //"Acertando Niveis no SC2"
+	M330PrcLog("MENSAGEM",OemToAnsi("STR") +"STR0067"+cFilAnt,OemToAnsi("STR"), '2') //"Acertando Niveis no SC2"
 
 	//-- Atualiza nivel nas OPs do período com base na estrutura
 	cInsUpd := "UPDATE " +RetSQLName("SC2") +" SET C2_NIVEL = "+MatIsnull()+"(("
@@ -10569,7 +10569,7 @@ If Len(a330RegCTB)>0
 			//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
 			//³ Atualiza o log de processamento			    ³
 			//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
-			M330PrcLog("MENSAGEM",OemToAnsi("STR") +STR0067+cFilAnt,OemToAnsi("STR")) //"Iniciando Geração do Arquivo de Contra-Prova"
+			M330PrcLog("MENSAGEM",OemToAnsi("STR") +"STR0067"+cFilAnt,OemToAnsi("STR")) //"Iniciando Geração do Arquivo de Contra-Prova"
 
 			dbSelectArea("TRC")
 			dbGoTop()
@@ -11364,7 +11364,7 @@ If SuperGetMv("MV_330ATCM",.F.,.F.)
 			SB2->(MsUnLock())
 			dbSkip()
 		EndDo
-		M330PrcLog("MENSAGEM","STR",STR0159) //"Atualização do custo unitario de fechamento - (1) Termino"
+		M330PrcLog("MENSAGEM","STR","STR0159") //"Atualização do custo unitario de fechamento - (1) Termino"
 	// Tabela Exclusiva
 	Else
 		cSB2Table := RetSQLName("SB2")
@@ -11609,7 +11609,7 @@ If nTipo == 1
 					cMoeda   := IIf(Empty(SD3->D3_MOEDA),1,SD3->D3_MOEDA)
 					nCM      := SD3->D3_CMFIXO
 					If (lCusFil .Or. lCusEmp) .And. lProcREA
-						A330TT2B2(,,,,,,.F.,cNomTRT,NIL,lCstPart,aRegraCP,lCusEmp,lCusFil,,.T.,cNomTR2)
+						U_A330TT2B2(,,,,,,.F.,cNomTRT,NIL,lCstPart,aRegraCP,lCusEmp,lCusFil,,.T.,cNomTR2)
 					EndIf
 					nVFim    := &("SB2->B2_VFIM"+cMoeda)
 					nVFimNew := (SB2->B2_QFIM * nCM)
@@ -11705,7 +11705,7 @@ Return aCM
 ±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±
 ßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßß
 */
-Static Static Function A330Seq300()
+Static Function A330Seq300()
 Local aAreaAnt
 Local aAreaTRB
 Local aMovimento	:= {}
@@ -12209,14 +12209,14 @@ If cOrdem $ "100/500"
 									Loop
 								EndIf
 								Conout(Replicate("-",80))	//"-----------------------------------------------------"
-								Conout(STR0177)				//"MATA330: Erro de aplicacao na thread de Custo Medio  "
-								Conout(STR0127+cJobAux)		//"Thread numero : "
+								Conout("STR0177")				//"MATA330: Erro de aplicacao na thread de Custo Medio  "
+								Conout("STR0127"+cJobAux)		//"Thread numero : "
 								Conout(Replicate("-",80))  //"------------------------------------------------------"
 								//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
 								//³ Atualiza o log de processamento			    ³
 								//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
 								M330PrcLog("ERRO","STR"+" "+cOrdem+" - " +"STR" +StrZero(nX,3) +"STR"+cFilAnt,"STR"+" JobFile:" +cJobFile)	//"MATA330: Erro de aplicacao na thread de Custo Medio" ## "Thread numero : "
-								Final(STR0177)				//"MATA330: Erro de aplicacao na thread de Custo Medio"
+								Final("STR0177")				//"MATA330: Erro de aplicacao na thread de Custo Medio"
 							EndIf
 						// THREAD PROCESSADA CORRETAMENTE
 						Case GetGlbValue(cJobAux) == '3'
@@ -12225,7 +12225,7 @@ If cOrdem $ "100/500"
 							//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
 							//³ Atualiza o log de processamento			    ³
 							//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
-							M330PrcLog("MENSAGEM",OemToAnsi(I18N(STR0173,{cOrdem,cFilAnt,cChamada+' '+StrZero(nX,3)})),OemToAnsi(I18N("STR",{cOrdem,cFilAnt,+' '+StrZero(nX,3)}))) // "Processando Ordem #1[100]# - Filial #2[D MG 01]# -#3[01]#- Thread numero :#4[001]# - (1) Termino"
+							M330PrcLog("MENSAGEM",OemToAnsi(I18N("STR0173",{cOrdem,cFilAnt,cChamada+' '+StrZero(nX,3)})),OemToAnsi(I18N("STR",{cOrdem,cFilAnt,+' '+StrZero(nX,3)}))) // "Processando Ordem #1[100]# - Filial #2[D MG 01]# -#3[01]#- Thread numero :#4[001]# - (1) Termino"
 							Exit
 					EndCase
 
@@ -12278,7 +12278,7 @@ ElseIf cOrdem == "300"
 		//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
 		//³ Atualiza o log de processamento			    ³
 		//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
-		M330PrcLog("MENSAGEM",OemToAnsi(I18N(STR0179,{cOrdem,cFilAnt,cChamada+' '+StrZero(nX,3)})),OemToAnsi(I18N(STR0179,{cOrdem,cFilAnt,cChamada+' '+StrZero(nX,3)}))) // "Processando Ordem #1[100]# - Filial #2[D MG 01]# -#3[01]#- Thread numero :#4[001]# - (0) Inicio"
+		M330PrcLog("MENSAGEM",OemToAnsi(I18N("STR0179",{cOrdem,cFilAnt,cChamada+' '+StrZero(nX,3)})),OemToAnsi(I18N("STR0179",{cOrdem,cFilAnt,cChamada+' '+StrZero(nX,3)}))) // "Processando Ordem #1[100]# - Filial #2[D MG 01]# -#3[01]#- Thread numero :#4[001]# - (0) Inicio"
 
 		// Informacoes do semaforo
 		cJobFile:= cStartPath+cFilAnt+StrZero(nX,2)+".CM"
@@ -12511,7 +12511,7 @@ M330PrcLog("MENSAGEM",IIf(lCusFil,"STR","STR"),CountTRT(aFilsCalc,)) //"Acerto d
 If lCusEmp
 	If l330ArqExcl .Or. nThreads <= 1
 		// Processa o Custo Unificado por Empresa
-		A330TT2B2(.F.,,,,,,lExistProc,cNomTRT,NIL,lCstPart,aRegraCP,lCusEmp,lCusFil,lFiltraUnif,,cNomTR2)
+		U_A330TT2B2(.F.,,,,,,lExistProc,cNomTRT,NIL,lCstPart,aRegraCP,lCusEmp,lCusFil,lFiltraUnif,,cNomTR2)
 	Else
 		// Processa o Custo Unificado por Empresa em Job
 		lJobEmp := .T.
@@ -12526,7 +12526,7 @@ ElseIf lCusFil
 				// Altera filial corrente
 				cFilAnt:=aFilsCalc[nForFilial,2]
 				// Processa o Custo Unificado por Filial
-				A330TT2B2(.F.,,,,,,lExistProc,cNomTRT,NIL,lCstPart,aRegraCP,lCusEmp,lCusFil,lFiltraUnif,,cNomTR2)
+				U_A330TT2B2(.F.,,,,,,lExistProc,cNomTRT,NIL,lCstPart,aRegraCP,lCusEmp,lCusFil,lFiltraUnif,,cNomTR2)
 			EndIf
 		Next nForFilial
 	Else
@@ -12538,7 +12538,7 @@ EndIf
 If lJobEmp .Or. lJobFil
 
 	cIDThread := cValToChar(ThreadID())
-	cSemaforo := "A330TT2B2_"+cIDThread+"_"+CEMPANT
+	cSemaforo := "U_A330TT2B2_"+cIDThread+"_"+CEMPANT
 	A330JobManual("1", cSemaforo, "M330TT2CONNECT" )
 
 	For nForFilial := 1 to Len(aFilsCalc)
@@ -12613,7 +12613,7 @@ If lJobEmp .Or. lJobFil
 								//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
 								//³ Atualiza o log de processamento			    ³
 								//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
-								M330PrcLog("MENSAGEM","STR" +" " +"STR" +StrZero(nX,3) +"STR"+cFilAnt,STR0183)	//"Não foi possivel realizar a subida da thread (Custo Unificado)"
+								M330PrcLog("MENSAGEM","STR" +" " +"STR" +StrZero(nX,3) +"STR"+cFilAnt,"STR0183")	//"Não foi possivel realizar a subida da thread (Custo Unificado)"
 								Final("STR") 							//"Não foi possivel realizar a subida da thread (Custo Unificado)"
 							Else
 								nRetry_0 ++
@@ -12655,7 +12655,7 @@ If lJobEmp .Or. lJobFil
 									//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
 									//³ Dispara thread para o calculo do Custo Unificado ³
 									//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
-//									StartJob("A330TT2B2",GetEnvServer(),lThrSeq,.T.,cEmpAnt,cFilAnt,aThreads[nX],cJobFile,StrZero(nX,2),lExistProc,cNomTRT,NIL,lCstPart,aRegraCP,lCusEmp,lCusFil,lFiltraUnif,,cNomTR2)
+//									StartJob("U_A330TT2B2",GetEnvServer(),lThrSeq,.T.,cEmpAnt,cFilAnt,aThreads[nX],cJobFile,StrZero(nX,2),lExistProc,cNomTRT,NIL,lCstPart,aRegraCP,lCusEmp,lCusFil,lFiltraUnif,,cNomTR2)
 								EndIf
 								nRetry_1 ++
 							EndIf
@@ -12700,7 +12700,7 @@ If lJobEmp .Or. lJobFil
 	Next nForFilial
 
 	cIDThread := cValToChar(ThreadID())
-	cSemaforo := "A330TT2B2_"+cIDThread+"_"+CEMPANT
+	cSemaforo := "U_A330TT2B2_"+cIDThread+"_"+CEMPANT
 	A330JobManual("2", cSemaforo, "M330TT2CONNECT" )
 
 EndIf
@@ -13826,7 +13826,7 @@ RETURN .T.
 @version 1.0
 @return logico - sempre verdadeiro
 /*/
-StaticFUNCTION M330JOBEXIT()
+Static FUNCTION M330JOBEXIT()
 RETURN .T.
 
 /*/{Protheus.doc} M330JOBCONNECT - Executa a funcao M330JOCM para calculo do custo dos movimentos
@@ -13863,7 +13863,7 @@ oJourneyLog := LogConverObj(cData)
 RETURN
 
 
-/*/{Protheus.doc} M330TT2CONNECT - Executa a funcao A330TT2B2 para calculo do custo unificado por empresa/filial
+/*/{Protheus.doc} M330TT2CONNECT - Executa a funcao U_A330TT2B2 para calculo do custo unificado por empresa/filial
 @author Totvs
 @since 06/04/2020
 @version 1.0
@@ -13879,7 +13879,7 @@ LOCAL lThread as Logical
 	A330ULckGlb(cGlbName)
 
 	lThread := .T.
-	A330TT2B2(lThread,cEmp,cFil,aThreads,cJobFile,cThread,lExistProc,cNomTRT,cNomTrbU1,lCstPart,aRegraCP,lCusEmp,lCusFil,lFiltraUnif,,cNomTR2)
+	U_A330TT2B2(lThread,cEmp,cFil,aThreads,cJobFile,cThread,lExistProc,cNomTRT,cNomTrbU1,lCstPart,aRegraCP,lCusEmp,lCusFil,lFiltraUnif,,cNomTR2)
 
 	A330LckGlb(cGlbName)
     PutGlbValue(cGlbName,"0")
@@ -14311,8 +14311,8 @@ LOCAL cIDThread
 	nI := 0
 	aUsers := {}
 
-	M330PrcLog("MENSAGEM",OemToAnsi(I18N("STR",{cIdentificador})),OemToAnsi(I18N("STR",{cIdentificador}))) // ## "Encerramento das working threads #1[A330TT2B2_37688_01]# - (0) Inicio"
-	ConOut("[MATA330] "+dtoc(Date())+" "+Time()+" " +I18N("STR",{cIdentificador}) ) // ## "Encerramento das working threads #1[A330TT2B2_37688_01]# - (0) Inicio"
+	M330PrcLog("MENSAGEM",OemToAnsi(I18N("STR",{cIdentificador})),OemToAnsi(I18N("STR",{cIdentificador}))) // ## "Encerramento das working threads #1[U_A330TT2B2_37688_01]# - (0) Inicio"
+	ConOut("[MATA330] "+dtoc(Date())+" "+Time()+" " +I18N("STR",{cIdentificador}) ) // ## "Encerramento das working threads #1[U_A330TT2B2_37688_01]# - (0) Inicio"
 
 	While lLoop // loop de controle para encerramento de todas as working threads
 		aUsers := GetUserInfoArray()
@@ -14340,8 +14340,8 @@ LOCAL cIDThread
 		nCntThread := 0
 		sleep(1000)
 	EndDo
-	ConOut("[MATA330] "+dtoc(Date())+" "+Time()+" " +I18N("STR",{cIdentificador}) ) // ## "Encerramento das working threads #1[A330TT2B2_37688_01] - (1) Termino"
-	M330PrcLog("MENSAGEM",OemToAnsi(I18N("STR",{cIdentificador})),OemToAnsi(I18N("STR",{cIdentificador}))) // ## "Encerramento das working threads #1[A330TT2B2_37688_01] - (1) Termino"
+	ConOut("[MATA330] "+dtoc(Date())+" "+Time()+" " +I18N("STR",{cIdentificador}) ) // ## "Encerramento das working threads #1[U_A330TT2B2_37688_01] - (1) Termino"
+	M330PrcLog("MENSAGEM",OemToAnsi(I18N("STR",{cIdentificador})),OemToAnsi(I18N("STR",{cIdentificador}))) // ## "Encerramento das working threads #1[U_A330TT2B2_37688_01] - (1) Termino"
 
 RETURN NIL
 

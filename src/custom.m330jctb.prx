@@ -3370,7 +3370,7 @@ Return 20141209 //-- Indica que a ultima atualizacao feita em 19/06/2013
 @version 1.0
 @return nulo
 /*/
-Function Function M330TJOBCONNECT(cEmp,cFil,aDataProc,cJobFile,cThread,cNomTrb,cIndTrb1,cIndTrb2,cIndTrb3,cIndTrb4,cIndTrb5,cIndTrb6,cLocalCQ,nOrderFIFO,lExistProc,lHabCon330,cListaFil,cNomTR2)
+User Function M330TJOBCONNECT(cEmp,cFil,aDataProc,cJobFile,cThread,cNomTrb,cIndTrb1,cIndTrb2,cIndTrb3,cIndTrb4,cIndTrb5,cIndTrb6,cLocalCQ,nOrderFIFO,lExistProc,lHabCon330,cListaFil,cNomTR2)
 LOCAL cGlbName
 LOCAL cThisThread
 
@@ -3402,7 +3402,7 @@ RETURN
 	@param cTexto, caracter, mensagem a ser gravada no log gerado
 	@param cDetalhe, caracter, detalhe a ser gravado para o log gerado
 /*/
-Function M330JCTBLog(cTipo,cTexto,cDetalhe,a330ParamZX,cFilBack)
+Static Function M330JCTBLog(cTipo,cTexto,cDetalhe,a330ParamZX,cFilBack)
 
 Default cFilBack := cFilAnt
 
@@ -3410,6 +3410,6 @@ oJourneyLog:LogProAtu(cTipo,cTexto,cDetalhe,cFilBack, , a330ParamZX[1], cFilAnt)
 
 Return
 
-Function A330CTBLegacy()
+User Function A330CTBLegacy()
 
 Return getLegacy()
