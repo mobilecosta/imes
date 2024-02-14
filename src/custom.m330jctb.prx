@@ -1,6 +1,5 @@
 #INCLUDE "TBICONN.CH"
 #INCLUDE "FILEIO.CH"
-#INCLUDE "M330JCTB.CH"
 #INCLUDE "PROTHEUS.CH"
 #INCLUDE "FWLIBVERSION.CH"
 #INCLUDE "FWEVENTVIEWCONSTS.CH"
@@ -32,7 +31,7 @@ Static aCt5 := {}	 // Variavel para armazenar os lancamentos padroes envolvidos 
 ±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±
 ßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßß
 */
-Function M330JCTB(cEmp,cFil,cNomTrc,cNomTRC1,cChave,nTotRegs,nZ,nX,nHdlPrv,cLoteEst,cArquivo,aDadosProva,cJobFile,lProcCV3,aUser,dDtProc,cNomTR2)
+User Function M330JCTB(cEmp,cFil,cNomTrc,cNomTRC1,cChave,nTotRegs,nZ,nX,nHdlPrv,cLoteEst,cArquivo,aDadosProva,cJobFile,lProcCV3,aUser,dDtProc,cNomTR2)
 // Variaveis que controlam valor dos lancamentos
 LOCAL n667669   :=0
 LOCAL nValLancto:=0
@@ -95,7 +94,7 @@ dbSeek(cFil+cChave)
 cUserName := aUser[1]
 __cUserID := aUser[2]
 
-ConOut("[MATA330] [Thread "+padl(cValToChar(ThreadID()),5)+"] "+dtoc(Date())+" "+Time()+STR0001+cJobFile) //" Inicio do job de contabilizacao do MATA330 "
+ConOut("[MATA330] [Thread "+padl(cValToChar(ThreadID()),5)+"] "+dtoc(Date())+" "+Time()+"STR0001"+cJobFile) //" Inicio do job de contabilizacao do MATA330 "
 
 While !KillApp() .And.  !TRC->(Eof()) .And. nCount < nTotRegs
 
@@ -157,7 +156,7 @@ If Select("TRC") > 0
 	TRC->(DBCloseArea())
 EndIf
 
-ConOut("[MATA330] [Thread "+padl(cValToChar(ThreadID()),5)+"] "+dtoc(Date())+" "+Time()+STR0002+cJobFile) //" Final do job de contabilizacao do MATA330 "
+ConOut("[MATA330] [Thread "+padl(cValToChar(ThreadID()),5)+"] "+dtoc(Date())+" "+Time()+"STR0002"+cJobFile) //" Final do job de contabilizacao do MATA330 "
 
 RETURN
 
@@ -182,7 +181,7 @@ RETURN
 ±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±
 ßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßß
 */
-Function M330JPRC(cEmp,cFil,aProcNam,aDataProc,cJobFile,cFilBack)
+Static Function M330JPRC(cEmp,cFil,aProcNam,aDataProc,cJobFile,cFilBack)
 Local nHd1	    := 0
 Local aResult   := {}
 Local lPropPr0  := SuperGetMV("MV_PRODPR0",.F.,1) == 1
@@ -205,7 +204,7 @@ cFilant := cFil
 PutGlbValue("P"+cEmp+cFil, "2" )
 A330ULckGlb("P"+cEmp+cFil)
 
-ConOut("[MATA330] "+dtoc(Date())+" "+Time()+STR0003+ " " + cFilAnt + " " + cJobFile) //" Inicio do job de geração do TRB do MATA330 "
+ConOut("[MATA330] "+dtoc(Date())+" "+Time()+"STR0003"+ " " + cFilAnt + " " + cJobFile) //" Inicio do job de geração do TRB do MATA330 "
 
 aResult:=TCSpExec(	xProcedures( aProcNam[1] ),;
 					cFil,;
@@ -247,7 +246,7 @@ aResult:=TCSpExec(	xProcedures( aProcNam[1] ),;
 					aDataProc[36],;             // 36. Filial que esta processando o recalculo
 					aDataProc[37])              // 37. Nome físico do Alias SB2
 
-ConOut("[MATA330] "+dtoc(Date())+" "+Time()+STR0004+ " " + cFilAnt + " " + cJobFile) //" Final do job de geração do TRB do MATA330 "
+ConOut("[MATA330] "+dtoc(Date())+" "+Time()+"STR0004"+ " " + cFilAnt + " " + cJobFile) //" Final do job de geração do TRB do MATA330 "
 
 If Empty(aResult)
 	// STATUS 4 - 'Erro na chamada do processo'
@@ -262,7 +261,7 @@ ElseIf aResult[1] == "0"
 ElseIf aResult[1] == "1"
 
 	If lPropPr0
-		ConOut("[MATA330] "+dtoc(Date())+" "+Time()+" " + OemToAnsi(STR0017) + " " + cFilAnt ) // ## "Procedures: Inicio da proporcionalização o custo dos apontamentos da ordem de produção na filial: "
+		ConOut("[MATA330] "+dtoc(Date())+" "+Time()+" " + OemToAnsi("STR0017") + " " + cFilAnt ) // ## "Procedures: Inicio da proporcionalização o custo dos apontamentos da ordem de produção na filial: "
 		aResult := TCSPEXEC( xProcedures( aProcNam[2] ), cFil ) // Executa a procedure MAT016
 
 		If Empty(aResult)
@@ -285,7 +284,7 @@ ElseIf aResult[1] == "1"
 		A330ULckGlb("P"+cEmp+cFil)
 
 		If lPropPr0
-			ConOut("[MATA330] "+dtoc(Date())+" "+Time()+" " + OemToAnsi(STR0018) + " " + cFilAnt ) // "Procedures: Fim da proporcionalização o custo dos apontamentos da ordem de produção na filial:"
+			ConOut("[MATA330] "+dtoc(Date())+" "+Time()+" " + OemToAnsi("STR0018") + " " + cFilAnt ) // "Procedures: Fim da proporcionalização o custo dos apontamentos da ordem de produção na filial:"
 		EndIf
 	EndIf
 
@@ -316,7 +315,7 @@ RETURN
 ±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±
 ßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßß
 /*/
-Function M330QtdThr(nTipo,cChave,cTabela)
+Static Function M330QtdThr(nTipo,cChave,cTabela)
 Local aAreaAnt  := GetArea()
 Local aAreaSB2  := SB2->(GetArea())
 Local aAreaTRB  := {}
@@ -559,7 +558,7 @@ Return aThreads
 ±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±
 ßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßß
 /*/
-Function M330TJOB(cEmp,cFil,aThreads,cJobFile,cThread,cNomTrb,cIndTrb1,cIndTrb2,cIndTrb3,cIndTrb4,cIndTrb5,cIndTrb6,cLocalCQ,nOrderFIFO,lExistProc,lHabCon330,cThrJOB,cNomTR2)
+Static Function M330TJOB(cEmp,cFil,aThreads,cJobFile,cThread,cNomTrb,cIndTrb1,cIndTrb2,cIndTrb3,cIndTrb4,cIndTrb5,cIndTrb6,cLocalCQ,nOrderFIFO,lExistProc,lHabCon330,cThrJOB,cNomTR2)
 
 Local nHd1       := 0
 Local nx         := 0
@@ -617,9 +616,9 @@ dbSetFilter({|| &cFiltroTRB},cFiltroTRB)
 dbSetOrder(6)
 
 If cThread <> '99'
-	ConOut("[MATA330] "+dtoc(Date())+" "+Time()+" "+STR0005+" "+cJobFile) //"MATA330: Inicio do job de Transferencia de Filial"
+	ConOut("[MATA330] "+dtoc(Date())+" "+Time()+" "+"STR0005"+" "+cJobFile) //"MATA330: Inicio do job de Transferencia de Filial"
 Else
-	ConOut("[MATA330] "+dtoc(Date())+" "+Time()+" "+STR0013+" "+cEmp+" "+cFil) //"MATA330: Inicio da Transferencia de Filial"
+	ConOut("[MATA330] "+dtoc(Date())+" "+Time()+" "+"STR0013"+" "+cEmp+" "+cFil) //"MATA330: Inicio da Transferencia de Filial"
 EndIf
 // Pesquisa em notas de saida de transferencia
 dbSeek(cFil+"S"+"SD2"+aThreads[1],.T.)
@@ -775,7 +774,7 @@ While  !KillApp() .And. TRB->(!Eof()) .And. TRB->(TRB_FILIAL+TRB_USATRA+TRB_ALIA
 End
 
 If cThread <> '99'
-	ConOut("[MATA330] "+dtoc(Date())+" "+Time()+" "+STR0006+" "+cJobFile) //"MATA330: Termino do job de Transferencia de Filial"
+	ConOut("[MATA330] "+dtoc(Date())+" "+Time()+" "+"STR0006"+" "+cJobFile) //"MATA330: Termino do job de Transferencia de Filial"
 
 	// STATUS 3 - Processamento efetuado com sucesso
 	A330LckGlb("T"+cEmp+cFil+cThread)
@@ -795,7 +794,7 @@ If cThread <> '99'
 		TRB->(dbCloseArea())
 	EndIf
 Else
-	ConOut("[MATA330] "+dtoc(Date())+" "+Time()+" "+STR0014+" "+cEmp+" "+cFil) //"MATA330: Termino da Transferencia de Filial"
+	ConOut("[MATA330] "+dtoc(Date())+" "+Time()+" "+"STR0014"+" "+cEmp+" "+cFil) //"MATA330: Termino da Transferencia de Filial"
 EndIf
 
 Return
@@ -839,7 +838,7 @@ Return
 ±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±
 ßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßß
 /*/
-Function M330JobCM(cEmp,cFil,cOrdem,aThreads,cJobFile,cThread,aArqs,lCstPart,aRegraCP,lCusRep,cPaisLoc,lPCusFil,lPCusEmp,aPE,dMVUlMes,a330ParamZX,lExistProc,aLocais,cChave,nProdProp,lIntMntAt,oListaTrf,cSeqCalc,cListaFil,cThreadID,oJourneyLog, aUser, cpKeyRegCT)
+Static Function M330JobCM(cEmp,cFil,cOrdem,aThreads,cJobFile,cThread,aArqs,lCstPart,aRegraCP,lCusRep,cPaisLoc,lPCusFil,lPCusEmp,aPE,dMVUlMes,a330ParamZX,lExistProc,aLocais,cChave,nProdProp,lIntMntAt,oListaTrf,cSeqCalc,cListaFil,cThreadID,oJourneyLog, aUser, cpKeyRegCT)
 
 LOCAL nX         := 0
 LOCAL nZ         := 0
@@ -982,7 +981,7 @@ If lLanctoOn
 EndIf
 
 // Log de Processamento
-ConOut("[MATA330] "+dtoc(Date())+" "+Time()+" "+STR0007+" "+cOrdem+" - "+STR0009+" "+cThread) //"MATA330: Processando Ordem ### - Thread : ### "
+ConOut("[MATA330] "+dtoc(Date())+" "+Time()+" "+"STR0007"+" "+cOrdem+" - "+"STR0009"+" "+cThread) //"MATA330: Processando Ordem ### - Thread : ### "
 
 //Troca o Alias SB2 para a tabela alternativa
 If 'TR2' $ cNomTR2
@@ -2596,7 +2595,7 @@ If !oBulk == nil
 EndIf
 
 // Log de Processamento
-ConOut("[MATA330] "+dtoc(Date())+" "+Time()+" "+STR0008+" "+cOrdem+" - "+STR0009+cThread) //"MATA330: Termino da Ordem ### - Thread ###"
+ConOut("[MATA330] "+dtoc(Date())+" "+Time()+" "+"STR0008"+" "+cOrdem+" - "+"STR0009"+cThread) //"MATA330: Termino da Ordem ### - Thread ###"
 
 // STATUS 3 - Processamento efetuado com sucesso
 A330LckGlb("M"+cEmp+cFil+cThread)
@@ -2709,7 +2708,7 @@ Return oTempTable
 ±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±
 ßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßß
 */
-Function A330TT2B2(lThread,cEmp,cFil,aThreads,cJobFile,cThread,lExistProc,cNomTRT,cNomTrbU1,lCstPart,aRegraCP,lCusEmp,lCusFil,lFiltraUnif,lProcREA,cNomTR2)
+User Function A330TT2B2(lThread,cEmp,cFil,aThreads,cJobFile,cThread,lExistProc,cNomTRT,cNomTrbU1,lCstPart,aRegraCP,lCusEmp,lCusFil,lFiltraUnif,lProcREA,cNomTR2)
 Local aDifs        := {0,0,0,0,0}
 Local aCMHist      := {0,0,0,0,0}
 Local _aDifsPartes := {}
@@ -2770,7 +2769,7 @@ Else
 	If lThread
 
 		// Log de Processamento
-		ConOut("[MATA330] "+dtoc(Date())+" "+Time()+I18N(STR0015,{cThread})) // " MATA330: Processando A330TT2B2 - Thread #1[1]#"
+		ConOut("[MATA330] "+dtoc(Date())+" "+Time()+I18N("STR0015",{cThread})) // " MATA330: Processando A330TT2B2 - Thread #1[1]#"
 
 		// Apaga arquivo ja existente
 		If File(cJobFile)
@@ -2929,7 +2928,7 @@ Else
 		cQuery += cQrySelect
 
 		If TcSqlExec(cQuery) < 0
-			UserException( STR0021 +TCSQLError() ) // "Falha na seleç?o dos produto para o custo unificado: "
+			UserException( "STR0021" +TCSQLError() ) // "Falha na seleç?o dos produto para o custo unificado: "
 		EndIf
 
 	Else
@@ -2950,7 +2949,7 @@ Else
 		//³ Movimentacao do Cursor                                    ³
 		//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
 		If lProgress
-			IncProc(IIf(lCusFil,STR0011,STR0010)) //Acertando o Custo Unificado por Filial/Empresa
+			IncProc(IIf(lCusFil,"STR0011","STR0010")) //Acertando o Custo Unificado por Filial/Empresa
 		EndIf
 		//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
 		//³ Preenche array com valor total do produto na filial  ³
@@ -3092,7 +3091,7 @@ Else
 		//³ Execucao da query para atualizacao de valores no SB2 ³
 		//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
 		If TcSqlExec(cQuery) < 0
-			UserException( STR0019+TCSQLError() ) // "Falha na atualização do saldo atual dos produtos para o custo unificado: "
+			UserException( "STR0019"+TCSQLError() ) // "Falha na atualização do saldo atual dos produtos para o custo unificado: "
 		EndIf
 
 		dbSelectArea(cUpdAlias)
@@ -3294,7 +3293,7 @@ Else
 		ENDIF
 
 		If TcSqlExec(cQuery) < 0
-			UserException( STR0020 +TCSQLError() ) //"Falha na atualização do custo unificado na tabela SB2: "
+			UserException( "STR0020" +TCSQLError() ) //"Falha na atualização do custo unificado na tabela SB2: "
 		EndIf
 
 	EndIf
@@ -3305,7 +3304,7 @@ Else
 			If __oSB2CstUnif <> NIL
 				cQuery := "TRUNCATE TABLE " + __oSB2CstUnif:GetRealName()
 				If TcSqlExec(cQuery) < 0
-					UserException( STR0020 +TCSQLError() ) //"Falha na atualização do custo unificado na tabela SB2: "
+					UserException( "STR0020" +TCSQLError() ) //"Falha na atualização do custo unificado na tabela SB2: "
 				EndIf
 			EndIf
 		EndIf
@@ -3329,7 +3328,7 @@ Else
 		EndIf
 
 		// Log de Processamento
-		ConOut("[MATA330] "+dtoc(Date())+" "+Time()+I18N(STR0016,{cThread})) // " MATA330: Finalizado A330TT2B2 - Thread #1[1]#"
+		ConOut("[MATA330] "+dtoc(Date())+" "+Time()+I18N("STR0016",{cThread})) // " MATA330: Finalizado A330TT2B2 - Thread #1[1]#"
 
 	Else
 		If lTempTable
@@ -3362,7 +3361,7 @@ Return
 ±±ÀÄÄÄÄÄÄÄÄÄÄÁÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ±±
 ±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±
 ßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßß*/
-Function M330JCTB_V()
+Static Function M330JCTB_V()
 Return 20141209 //-- Indica que a ultima atualizacao feita em 19/06/2013
 
 /*/{Protheus.doc} M330TJOBCONNECT - Executa a funcao M330TJOB para transferencia entre filiais
@@ -3371,7 +3370,7 @@ Return 20141209 //-- Indica que a ultima atualizacao feita em 19/06/2013
 @version 1.0
 @return nulo
 /*/
-Function M330TJOBCONNECT(cEmp,cFil,aDataProc,cJobFile,cThread,cNomTrb,cIndTrb1,cIndTrb2,cIndTrb3,cIndTrb4,cIndTrb5,cIndTrb6,cLocalCQ,nOrderFIFO,lExistProc,lHabCon330,cListaFil,cNomTR2)
+Function Function M330TJOBCONNECT(cEmp,cFil,aDataProc,cJobFile,cThread,cNomTrb,cIndTrb1,cIndTrb2,cIndTrb3,cIndTrb4,cIndTrb5,cIndTrb6,cLocalCQ,nOrderFIFO,lExistProc,lHabCon330,cListaFil,cNomTR2)
 LOCAL cGlbName
 LOCAL cThisThread
 
