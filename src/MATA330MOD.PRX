@@ -1,0 +1,1646 @@
+#include "protheus.ch"
+#include "mata330mod.ch"
+#include "fwlibversion.ch"
+
+Static __cCTB250  := nil
+Static __oCTB250  := nil
+Static __lCTB250  := nil
+Static __cAssProc := nil
+Static __lBlind   := nil
+
+/*/{Protheus.doc} A330CalcMod
+	Calculo da Mao de Obra de acordo com os movimentos internos do periodo
+	@type  Function
+	@author reynaldo
+	@since 14/01/2021
+	@version 1.0
+	@param param_name, param_type, param_descr
+	@return return_var, return_type, return_description
+	@example
+	(examples)
+	@see ()
+/*/
+Function A330CalcMod(a330Param, aFilsCalc, cOpcoes, dInicio, cMoedaCM)
+Local nForFilial
+Local dTermino
+Local lUsaSIGACON
+Local cCTBIni
+Local cCTBFim
+Local nPercInc
+Local cMV_CUSFIL
+Local cCQ1_CONTA
+Local cMsg
+Local lCalculaMO
+
+Private lCusEmp
+Private lCusFil
+Private cMV_MOEDACM
+Private cSGBD
+Private cFilBack
+Private dIniBack
+
+DEFAULT dInicio  := SuperGetMv("MV_ULMES",.F.,SToD("19961231"))+1
+
+	cMV_CUSFIL := AllTrim(SuperGetMv('MV_CUSFIL' ,.F.,"A"))
+	lCusEmp    := cMV_CUSFIL == "E"
+	lCusFil    := cMV_CUSFIL == "F"
+
+	If cMoedaCM == NIL
+		cMV_MOEDACM := SuperGetMv('MV_MOEDACM',.F.,"2345")
+	Else
+		cMV_MOEDACM := cMoedaCM
+	EndIf
+
+	cSGBD := TCGetDB()
+
+	dTermino    := If(Len(a330Param) >0 ,a330Param[01],dDataBase)
+	nPercInc    := If(Len(a330Param) >4 ,a330Param[05],0)
+	lUsaSIGACON := If(Len(a330Param) >5 ,a330Param[06] == 1,.F.)
+	cCQ1_CONTA  := Space(TamSX3("CQ1_CONTA")[1])
+	cCTBIni     := If(Len(a330Param) >6 ,a330Param[07],cCQ1_CONTA)
+	cCTBFim     := If(Len(a330Param) >7 ,a330Param[08],cCQ1_CONTA)
+	lCalculaMO  := .F.
+
+	cFilBack := cFilAnt
+	dIniBack := dInicio
+	For nForFilial := 1 to Len(aFilsCalc)
+		If aFilsCalc[nForFilial,1]
+			// Altera filial corrente
+			cFilAnt:=aFilsCalc[nForFilial,2]
+			dInicio := SuperGetMv("MV_ULMES",.F.,SToD("19961231"))+1
+			// Depois de definir o tamanho do salto do cursor ele executara
+			// as opcoes selecionadas.
+			//
+			If Subs(cOpcoes,1,1) == "1"
+				cMsg := OemToAnsi(I18N(STR0001,{cFilAnt})) // "Recalculo do custo da mão de obra - Filial #1[D MG 01]# - Iniciando"
+				M330PrcLog("MENSAGEM",cMsg ,cMsg )
+				// Calculo dos Produtos Mao-de-Obra COM e SEM a nomenclatura "MOD"
+				A330MODB(dInicio, dTermino, lUsaSIGACON,cCTBIni,cCTBFim,nPercInc)
+				cMsg := OemToAnsi(I18N(STR0002,{cFilAnt})) // "Recalculo do custo da mão de obra - Filial #1[D MG 01]# - Finalizado"
+				M330PrcLog("MENSAGEM",cMsg ,cMsg )
+				lCalculaMO := .T.
+			EndIf
+		EndIf
+	Next nForFilial
+	// Restaura filial original apos processamento
+	cFilAnt	:= cFilBack
+	dInicio := dIniBack
+
+	If lCalculaMO
+		//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ?
+		// Telemetria - Uso da classe FwCustomMetrics                    //
+		// Metrica - setAverageMetric                                    //
+		// Grava se utiliza calculo de mao de obra por absorcao contabil //
+		// no Recalculo do Custo Medio (Calcula mao de obra = Sim)       //
+		//?ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ?
+		If FWLibVersion() >= "20210628"
+			FWCustomMetrics():setAverageMetric(	"MATA330MOD"/*cSubRoutine*/,;
+												"estoque/custos-protheus_recalculo-do-custo-medio-calculo-de-mao-de-obra-por-absorcao-contabil_count" /*cIdMetric*/,;
+												1 /*nValue*/,;
+												/*dDateSend*/,;
+												/*nLapTime*/,;
+												"MATA330"/*cRotina*/)
+		EndIf
+	EndIf
+
+Return
+
+ /*/{Protheus.doc} A330MODB
+		Calcula o custo das requisicoes de mao de obra feitas no periodo
+	@type  Function
+	@author Eveli Morasco
+	@since 04/02/92
+	@version 2.0
+	@param param_name, param_type, param_descr
+	@return return_var, return_type, return_description
+	@example
+	(examples)
+	@see ()
+/*/
+Static Function A330MODB(dInicio, dTermino,lUsaSIGACON,cCTBIni,cCTBFim,nPercInc)//FB
+Local lRet
+Local oProdutos
+Local oMovIntern
+Local cSB1Table
+Local cSB1Alias
+Local cSD3Table
+
+// crio a tabela temporaria com os produtos mao de obra
+oProdutos := CreateProd()
+cSB1Alias := oProdutos:GetAlias()
+cSB1Table := oProdutos:GetRealName()
+
+// carrego a tabela com os produtos
+SeleSB1(cSB1Table)
+
+lRet := !A330MODPE(cSB1Table) // execucao do ponto de entrada MA330MOD
+
+If lRet
+
+	// crio a tabela temporaria com os movimentos internos dos produtos de mao de obra
+	oMovIntern := CreaMovInt()
+	cSD3Table := oMovIntern:GetRealName()
+
+	// seleciono os movimentos referentes a mão de obra
+	SelMov(cSB1Table,cSD3Table,dInicio,dTermino)
+
+	// crio a tabela temporaria com os movimentos internos dos produtos de mao de obra
+	oMovCC := CreaMovCC()
+	cSD3CCTable := oMovCC:GetRealName()
+
+	// Totalizar as quantidades por centro de custo
+	SelMovCC(cSB1Table,cSD3Table,cSD3CCTable)
+
+	// varre a SB2 e atualiza o mesmo com base na tabela temporaria de movimentos internos
+	updPROmod(cSB1Alias,cSB1Table,cSD3Table,cSD3CCTable,dInicio,dTermino,lUsaSIGACON,cCTBIni,cCTBFim,nPercInc)
+
+EndIf
+
+Return
+
+ /*/{Protheus.doc} CreateProd
+	Cria tabela temporaria para armazenar os produtos de mão de obra
+	@type  Function
+	@author reynaldo
+	@since 14/01/2021
+	@version 1.0
+	@param param_name, param_type, param_descr
+	@return return_var, return_type, return_description
+	@example
+	(examples)
+	@see ()
+/*/
+Static Function CreateProd()
+Local cAlias
+Local aFields
+Local aStruField
+Local cGetRealName as Character
+Static __oTmpTblPr
+
+If __oTmpTblPr == NIL
+	cAlias := CriaTrab(NIL,.F.)
+	aFields := {}
+
+	cSX3Campo := "B1_COD"
+	aStruField := FWSX3Util():GetFieldStruct(cSX3Campo)
+	aadd(aFields,aStruField)
+
+	cSX3Campo := "B1_CCCUSTO"
+	aStruField := FWSX3Util():GetFieldStruct(cSX3Campo)
+	aadd(aFields,aStruField)
+
+	cSX3Campo := "B1_GCCUSTO"
+	aStruField := FWSX3Util():GetFieldStruct(cSX3Campo)
+	aadd(aFields,aStruField)
+
+	cSX3Campo := "MODELO"
+	aStruField := {cSX3Campo,"C",1,0}
+	aadd(aFields,aStruField)
+	//-------------------
+	//Criação do objeto
+	//-------------------
+	__oTmpTblPr := FWTemporaryTable():New( cAlias )
+	//--------------------------
+	//Monta os campos da tabela
+	//--------------------------
+	__oTmpTblPr:SetFields( aFields )
+	//------------------
+	//Criação dos indices
+	//------------------
+	__oTmpTblPr:AddIndex( "01", {"B1_COD", "MODELO"} )
+	//------------------
+	//Criação da tabela
+	//------------------
+	__oTmpTblPr:Create()
+else
+	cGetRealName := __oTmpTblPr:GETREALNAME()
+	TcSqlExec('Truncate table '+cGetRealName)	
+EndIf	
+
+FWFreeArray(aFields)
+FWFreeArray(aStruField)
+
+Return __oTmpTblPr
+
+ /*/{Protheus.doc} SeleSB1
+		Atualiza a tabela temporaria com os produtos de mão de obra
+	@type  Function
+	@author reynaldo
+	@since 14/01/2021
+	@version 1.0
+	@param param_name, param_type, param_descr
+	@return return_var, return_type, return_description
+	@example
+	(examples)
+	@see ()
+/*/
+Static Function SeleSB1(cTempTable)
+Local cQuery
+Local cAliasSB1
+Local cCCCustoVaz
+Local cTblSB1
+Local cSB1Filial
+Local cStatement
+Local aGroupStat
+
+	cAliasSB1 := CriaTrab(NIL,.F.)
+	cCCCustoVaz := Criavar("B1_CCCUSTO",.F.)
+	cTblSB1 := RetSqlName("SB1")
+	cSB1Filial := xFilial("SB1")
+
+	// seleciona os produtos das 2 modalidades de MOD
+	cQuery := "SELECT B1_COD, B1_CCCUSTO, B1_GCCUSTO ,'2' MODELO "
+	cQuery += " FROM "+cTblSB1+" SB1 "
+	cQuery += " WHERE B1_FILIAL = '"+cSB1Filial+"' "
+	cQuery += " AND B1_COD NOT LIKE 'MOD%' "
+	cQuery += " AND B1_CCCUSTO <> '"+cCCCustoVaz+"' "
+	cQuery += " AND D_E_L_E_T_ = ' ' "
+	cQuery += " UNION "
+  	cQuery += "SELECT B1_COD, ' ', ' ' ,'1' "
+	cQuery += " FROM "+cTblSB1+" SB1 "
+	cQuery += " WHERE B1_FILIAL = '"+cSB1Filial+"' "
+	cQuery += " AND B1_COD LIKE 'MOD%' "
+	cQuery += " AND D_E_L_E_T_ = ' ' "
+
+	cQuery := ChangeQuery(cQuery)
+	MpSysOpenQuery(cQuery ,cAliasSB1)
+
+	If Select(cAliasSB1) >0
+		aGroupStat := {}
+		While (cAliasSB1)->(!Eof())
+
+			cStatement := "INSERT INTO " +cTempTable+ " "
+			cStatement += " ( B1_COD, B1_CCCUSTO, B1_GCCUSTO, MODELO ) "
+			cStatement += "VALUES ( '"+(cAliasSB1)->B1_COD+"', '"+(cAliasSB1)->B1_CCCUSTO+"', '"+(cAliasSB1)->B1_GCCUSTO+"', '"+(cAliasSB1)->MODELO+"'  ) "
+
+			aAdd( aGroupStat, cStatement )
+
+			If len(aGroupStat)>4000
+				ExecStat(aGroupStat)
+			EndIf
+			(cAliasSB1)->(dbSkip())
+
+		EndDo
+		If len(aGroupStat)>0
+			ExecStat(aGroupStat)
+		EndIf
+		(cAliasSB1)->(dbCloseArea())
+	EndIf
+
+	FWFreeArray(aGroupStat)
+Return
+
+ /*/{Protheus.doc} A330MODPE
+		Executa o ponto de entrada MA330MOD passando os produtos
+	@type  Function
+	@author reynaldo
+	@since 14/01/2021
+	@version 1.0
+	@param param_name, param_type, param_descr
+	@return return_var, return_type, return_description
+	@example
+	(examples)
+	@see ()
+/*/
+Static Function A330MODPE(cSB1Table)
+Local lMA330MOD
+Local cCodPesq
+Local cCodCC
+Local cGrupo
+Local cSB1Alias
+Local cQuery
+
+lMA330MOD := ExistBlock("MA330MOD")
+
+If lMA330MOD
+	cCodPesq := ""
+	cCodCC   := ""
+	cGrupo   := ""
+
+	cSB1Alias := CriaTrab(NIL,.F.)
+
+  	cQuery := ""
+  	cQuery += "SELECT 'MOD' B1_COD, ' ' B1_CCCUSTO, ' ' B1_GCCUSTO "
+	cQuery += " FROM "+cSB1Table+" SB1 "
+	cQuery += " WHERE MODELO = '1' "
+	cQuery += " GROUP BY MODELO "
+  	cQuery += " UNION "
+	cQuery += "SELECT B1_COD, B1_CCCUSTO, B1_GCCUSTO "
+	cQuery += " FROM "+cSB1Table+" SB1 "
+	cQuery += " WHERE MODELO = '2' "
+
+	cQuery := ChangeQuery(cQuery)
+	MpSysOpenQuery(cQuery ,cSB1Alias)
+	While (cSB1Alias)->(!Eof())
+
+		cCodPesq := (cSB1Alias)->B1_COD
+		cCodCC   := (cSB1Alias)->B1_CCCUSTO
+		cGrupo   := (cSB1Alias)->B1_GCCUSTO
+
+		ExecBlock("MA330MOD",.F.,.F.,{cCodPesq,cCodCC,cGrupo})
+
+		(cSB1Alias)->(dbSkip())
+	EndDo
+	(cSB1Alias)->(dbCloseArea())
+EndIf
+
+Return lMA330MOD
+
+ /*/{Protheus.doc} CreaMovInt
+			Cria  a tabela temporaria com os movimentos internos do periodo dos produtos de mao de obra
+	@type  Function
+	@author reynaldo
+	@since 14/01/2021
+	@version 1.0
+	@param param_name, param_type, param_descr
+	@return return_var, return_type, return_description
+	@example
+	(examples)
+	@see ()
+/*/
+Static Function CreaMovInt()
+Local cAlias
+Local aFields
+Local aStruField
+Local cGetRealName as Character
+Static __oTmpTblMi
+
+If __oTmpTblMi == NIL
+	cAlias := CriaTrab(NIL,.F.)
+	aFields := {}
+	cSX3Campo := "D3_COD"
+	aStruField := FWSX3Util():GetFieldStruct(cSX3Campo)
+	aadd(aFields,aStruField)
+
+	cSX3Campo := "D3_LOCAL"
+	aStruField := FWSX3Util():GetFieldStruct(cSX3Campo)
+	aadd(aFields,aStruField)
+
+	cSX3Campo := "D3_QUANT"
+	aStruField := FWSX3Util():GetFieldStruct(cSX3Campo)
+	aadd(aFields,aStruField)
+
+	//-------------------
+	//Criação do objeto
+	//-------------------
+	__oTmpTblMi := FWTemporaryTable():New( cAlias )
+	//--------------------------
+	//Monta os campos da tabela
+	//--------------------------
+	__oTmpTblMi:SetFields( aFields )
+	//------------------
+	//Criação dos indices
+	//------------------
+	__oTmpTblMi:AddIndex( "01", {"D3_COD", "D3_LOCAL"} )
+	//------------------
+	//Criação da tabela
+	//------------------
+	__oTmpTblMi:Create()
+else
+	cGetRealName := __oTmpTblMi:GETREALNAME()
+	TcSqlExec('Truncate table '+cGetRealName)	
+EndIf
+
+FWFreeArray(aFields)
+FWFreeArray(aStruField)
+
+Return __oTmpTblMi
+
+ /*/{Protheus.doc} SelMov
+		Atualiza a tabela temporaria com os movimentos internos do periodo dos produtos de mao de obra
+		totalizando por produto e local de estoque
+	@type  Function
+	@author reynaldo
+	@since 14/01/2021
+	@version 1.0
+	@param param_name, param_type, param_descr
+	@return return_var, return_type, return_description
+	@example
+	(examples)
+	@see ()
+/*/
+Static Function SelMov(cSB1Table,cTempTable,dInicio,dTermino)
+Local cQuery
+Local cAliasSD3
+Local cSD3Filial
+Local cSD3Table
+Local aGroupStat
+
+	cAliasSD3 := CriaTrab(NIL,.F.)
+	cSD3Filial := xFilial("SD3")
+	cSD3Table := RetSqlName("SD3")
+
+	cQuery := "SELECT D3_COD, D3_LOCAL, "
+	cQuery += " SUM(CASE WHEN D3_TM > '500' THEN (D3_QUANT*-1) ELSE D3_QUANT END) D3_QUANT "
+	cQuery += " FROM "+cSD3Table+ " SD3 "
+	cQuery += " INNER JOIN "+cSB1Table+ " SB1 "
+	cQuery +=  " ON B1_COD = D3_COD "
+	cQuery += " WHERE D3_FILIAL = '" + cSD3Filial + "' "
+	cQuery += " AND D3_EMISSAO >= '" + dtos(dInicio) + "' "
+	cQuery += " AND D3_EMISSAO <= '" + dtos(dTermino) + "' "
+	cQuery += " AND D3_ESTORNO = ' ' "
+	cQuery += " AND D3_CF NOT IN('PR0','PR1') "
+	cQuery += " AND SD3.D_E_L_E_T_ = ' ' "
+	cQuery += " GROUP BY D3_COD, D3_LOCAL "
+
+	cQuery := ChangeQuery(cQuery)
+	MpSysOpenQuery(cQuery ,cAliasSD3)
+
+	If Select(cAliasSD3) >0
+		aGroupStat := {}
+		While (cAliasSD3)->(!Eof())
+
+			cStatement := "INSERT INTO " +cTempTable+ " "
+			cStatement += " ( D3_COD, D3_LOCAL, D3_QUANT ) "
+			cStatement += "VALUES ('"+(cAliasSD3)->D3_COD+"', '"+(cAliasSD3)->D3_LOCAL+"', "+str((cAliasSD3)->D3_QUANT)+") "
+
+			aAdd( aGroupStat, cStatement )
+
+			If len(aGroupStat)>4000
+				ExecStat(aGroupStat)
+			EndIf
+			(cAliasSD3)->(dbSkip())
+
+		EndDo
+		If len(aGroupStat)>0
+			ExecStat(aGroupStat)
+		EndIf
+		(cAliasSD3)->(dbCloseArea())
+	EndIf
+
+	FWFreeArray(aGroupStat)
+
+Return
+
+/*/{Protheus.doc} CreaMovCC
+		Cria tabela temporaria com os movimentos internos do periodo dos produtos de mao de obra
+		armazenando por centro de custo
+	@type  Function
+	@author reynaldo
+	@since 14/01/2021
+	@version 1.0
+	@param param_name, param_type, param_descr
+	@return return_var, return_type, return_description
+	@example
+	(examples)
+	@see ()
+/*/
+Static Function CreaMovCC()
+Local cAlias
+Local aFields
+Local aStruField
+Local cGetRealName as Character
+Static __oTmpTblCC
+
+If __oTmpTblCC == NIL
+	cAlias := CriaTrab(NIL,.F.)
+	aFields := {}
+
+	cSX3Campo := "MODELO"
+	aStruField := {cSX3Campo,"C",1,0}
+	aadd(aFields,aStruField)
+
+	cSX3Campo := "B1_COD"
+	aStruField := FWSX3Util():GetFieldStruct(cSX3Campo)
+	aadd(aFields,aStruField)
+
+	cSX3Campo := "B1_CCCUSTO"
+	aStruField := FWSX3Util():GetFieldStruct(cSX3Campo)
+	aadd(aFields,aStruField)
+
+	cSX3Campo := "B1_GCCUSTO"
+	aStruField := FWSX3Util():GetFieldStruct(cSX3Campo)
+	aadd(aFields,aStruField)
+
+	cSX3Campo := "D3_QUANT"
+	aStruField := FWSX3Util():GetFieldStruct(cSX3Campo)
+	aadd(aFields,aStruField)
+
+	//-------------------
+	//Criação do objeto
+	//-------------------
+	__oTmpTblCC := FWTemporaryTable():New( cAlias )
+	//--------------------------
+	//Monta os campos da tabela
+	//--------------------------
+	__oTmpTblCC:SetFields( aFields )
+	//------------------
+	//Criação dos indices
+	//------------------
+	__oTmpTblCC:AddIndex( "01", {"B1_COD", "MODELO"} )
+	//------------------
+	//Criação da tabela
+	//------------------
+	__oTmpTblCC:Create()
+else
+	cGetRealName := __oTmpTblCC:GETREALNAME()
+	TcSqlExec('Truncate table '+cGetRealName)	
+EndIf	
+
+FWFreeArray(aFields)
+FWFreeArray(aStruField)
+
+Return __oTmpTblCC
+
+ /*/{Protheus.doc} SelMovCC
+		Atualiza a tabela temporaria com os movimentos internos do periodo dos produtos de mao de obra
+		totalizando por centro de custo associados aos produtos
+	@type  Function
+	@author reynaldo
+	@since 14/01/2021
+	@version 1.0
+	@param param_name, param_type, param_descr
+	@return return_var, return_type, return_description
+	@example
+	(examples)
+	@see ()
+/*/
+Static Function SelMovCC(cSB1Table,cSD3Table,cTempTable)
+Local cQuery
+Local cAliasSD3
+Local aGroupStat
+
+	cAliasSD3 := CriaTrab(NIL,.F.)
+
+	// Produtos com MOD
+	cQuery := "SELECT MODELO, B1_COD, ' ' B1_CCCUSTO, ' ' B1_GCCUSTO, SUM(D3_QUANT) TOTAL "
+	cQuery += " FROM " +cSD3Table+ " SD3 "
+	cQuery += " INNER JOIN " +cSB1Table+ " SB1 "
+	cQuery += " ON B1_COD = D3_COD "
+	cQuery += " AND SB1.MODELO='1' "
+	cQuery += " GROUP BY MODELO, B1_COD, B1_CCCUSTO, B1_GCCUSTO "
+
+ 	cQuery += " UNION "
+	// Produtos sem MOD
+	cQuery += "SELECT MODELO, ' ' B1_COD, B1_CCCUSTO, B1_GCCUSTO, SUM(D3_QUANT) TOTAL "
+	cQuery += " FROM " +cSD3Table+ " SD3 "
+	cQuery += " INNER JOIN " +cSB1Table+ " SB1 "
+	cQuery += " ON SB1.B1_COD = SD3.D3_COD "
+	cQuery += " AND SB1.MODELO='2' "
+	cQuery += " GROUP BY SB1.MODELO, SB1.B1_CCCUSTO , SB1.B1_GCCUSTO "
+
+	cQuery := ChangeQuery(cQuery)
+	MpSysOpenQuery(cQuery ,cAliasSD3)
+
+	If Select(cAliasSD3) >0
+		aGroupStat := {}
+		While (cAliasSD3)->(!Eof())
+
+			cStatement := "INSERT INTO " +cTempTable+ " "
+			cStatement += " ( MODELO, B1_COD, B1_CCCUSTO, B1_GCCUSTO, D3_QUANT ) "
+			cStatement += "VALUES ('"+(cAliasSD3)->MODELO+"', '"+(cAliasSD3)->B1_COD+"', '"+(cAliasSD3)->B1_CCCUSTO+"', '"+(cAliasSD3)->B1_GCCUSTO+"', "+str((cAliasSD3)->TOTAL)+") "
+
+			aAdd( aGroupStat, cStatement )
+
+			If len(aGroupStat)>4000
+				ExecStat(aGroupStat)
+			EndIf
+			(cAliasSD3)->(dbSkip())
+
+		EndDo
+		If len(aGroupStat)>0
+			ExecStat(aGroupStat)
+		EndIf
+		(cAliasSD3)->(dbCloseArea())
+	EndIf
+
+	FWFreeArray(aGroupStat)
+
+Return
+
+/*/{Protheus.doc} CreaMovPer
+	Cria tabela temporaria com os produtos de mao de obra cadastradas na tabela SB2.
+	@type  Function
+	@author reynaldo
+	@since 14/01/2021
+	@version 1.0
+	@param param_name, param_type, param_descr
+	@return return_var, return_type, return_description
+	@example
+	(examples)
+	@see ()
+/*/
+Static Function CreaMovPer()
+Local cAlias
+Local aFields
+Local aStruField
+Local cGetRealName as Character
+Static __oTmpTbPer
+
+If __oTmpTbPer == NIL
+	cAlias := CriaTrab(NIL,.F.)
+	aFields := {}
+	cSX3Campo := "B2_COD"
+	aStruField := FWSX3Util():GetFieldStruct(cSX3Campo)
+	aadd(aFields,aStruField)
+
+	cSX3Campo := "B2_LOCAL"
+	aStruField := FWSX3Util():GetFieldStruct(cSX3Campo)
+	aadd(aFields,aStruField)
+
+	cSX3Campo := "D3_QUANT"
+	aStruField := FWSX3Util():GetFieldStruct(cSX3Campo)
+	aadd(aFields,aStruField)
+
+	//-------------------
+	//Criação do objeto
+	//-------------------
+	__oTmpTbPer := FWTemporaryTable():New( cAlias )
+	//--------------------------
+	//Monta os campos da tabela
+	//--------------------------
+	__oTmpTbPer:SetFields( aFields )
+	//------------------
+	//Criação dos indices
+	//------------------
+	__oTmpTbPer:AddIndex( "01", {"B2_COD", "B2_LOCAL"} )
+	//------------------
+	//Criação da tabela
+	//------------------
+	__oTmpTbPer:Create()
+Else
+	cGetRealName := __oTmpTbPer:GETREALNAME()
+	TcSqlExec('Truncate table '+cGetRealName)	
+EndIf
+
+FWFreeArray(aFields)
+FWFreeArray(aStruField)
+
+Return __oTmpTbPer
+
+ /*/{Protheus.doc} SelMovPer
+		Atualiza a tabela temporaria com os produtos de mão de obra existentes na tabela SB2 e a
+		quantidade dos movimentos internos dos referidos produtos
+	@type  Function
+	@author reynaldo
+	@since 14/01/2021
+	@version 1.0
+	@param param_name, param_type, param_descr
+	@return return_var, return_type, return_description
+	@example
+	(examples)
+	@see ()
+/*/
+Static Function SelMovPer(cSD3Table,cSB1Table,cTempTable)
+Local cQuery
+Local cAliasSD3
+Local cSB2Filial
+Local cSB2Table
+Local aGroupStat
+
+	cAliasSD3 := CriaTrab(NIL,.F.)
+	cSB2Table := RetSQLName("SB2")
+	cSB2Filial := xFilial("SB2")
+
+	cQuery := "SELECT SB2.B2_COD, B2_LOCAL, SUM(SD3.D3_QUANT) D3_QUANT "
+	cQuery += " FROM " +cSB2Table+ " SB2 "
+	cQuery += " INNER JOIN " +cSB1Table+ " SB1 "
+	cQuery += " ON SB1.B1_COD = SB2.B2_COD "
+	cQuery += " LEFT JOIN " +cSD3Table+ " SD3 "
+	cQuery += " ON SD3.D3_COD = SB2.B2_COD "
+	cQuery += " AND SD3.D3_LOCAL = SB2.B2_LOCAL "
+	cQuery += " WHERE
+	cQuery += " SB2.B2_FILIAL = '" +cSB2Filial+ "' "
+	cQuery += " AND SB2.D_E_L_E_T_ = ' ' "
+	cQuery += " GROUP BY SB2.B2_COD, B2_LOCAL "
+
+	cQuery := ChangeQuery(cQuery)
+	MpSysOpenQuery(cQuery ,cAliasSD3)
+
+	If Select(cAliasSD3) >0
+		aGroupStat := {}
+		While (cAliasSD3)->(!Eof())
+
+			cStatement := "INSERT INTO " +cTempTable+ " "
+			cStatement += " ( B2_COD, B2_LOCAL, D3_QUANT ) "
+			cStatement += "VALUES ('"+(cAliasSD3)->B2_COD+"', '"+(cAliasSD3)->B2_LOCAL+"', "+str((cAliasSD3)->D3_QUANT)+") "
+
+			aAdd( aGroupStat, cStatement )
+
+			If len(aGroupStat)>4000
+				ExecStat(aGroupStat)
+			EndIf
+			(cAliasSD3)->(dbSkip())
+
+		EndDo
+		If len(aGroupStat)>0
+			ExecStat(aGroupStat)
+		EndIf
+		(cAliasSD3)->(dbCloseArea())
+	EndIf
+
+	FWFreeArray(aGroupStat)
+
+Return
+
+ /*/{Protheus.doc} updPROmod
+	Busca o valor nos lancamentos contabeis referente ao centro de custo dos produtos de mão de obra
+	@type  Function
+	@author reynaldo
+	@since 14/01/2021
+	@version 1.0
+	@param param_name, param_type, param_descr
+	@return return_var, return_type, return_description
+	@example
+	(examples)
+	@see ()
+/*/
+Static Function updPROmod(cSB1Alias,cSB1Table,cSD3Table,cSD3CCTable,dInicio,dTermino,lUsaSIGACON,cCTBIni,cCTBFim,nPercInc)
+Local cQuery
+Local cAliasMOD
+Local aSaldos
+Local nX
+Local lGrupo
+Local nTamCC
+Local aCM
+Local cCodCC
+Local cGrupo
+Local lA330GRUP
+Local lA330DECC
+Local lA330QTMO
+Local oMovPer
+Local cSB2Alias
+
+	lA330GRUP := ExistBlock("A330GRUP")
+	lA330DECC := ExistBlock("A330DECC")
+	lA330QTMO := ExistBlock("A330QTMO")
+
+	nTamCC := TamSX3("CTT_CUSTO")[1]
+
+	cAliasMOD := CriaTrab(NIL,.F.)
+
+	oMovPer := CreaMovPer()
+	cSB2Alias := oMovPer:GetAlias()
+	cSB2Table := oMovPer:GetRealName()
+
+	// carrego a tabela com os produtos
+	SelMovPer(cSD3Table,cSB1Table,cSB2Table)
+
+	(cSB1Alias)->(dbGoTop())
+	While (cSB1Alias)->(!Eof())
+
+		lGrupo := .T.
+
+		If (cSB1Alias)->MODELO=="1"
+			cCodPesq := "MOD"
+			cCodCC   := SubStr((cSB1Alias)->B1_COD,4,nTamCC)
+			cGrupo   := ""
+		Else
+			cCodPesq := (cSB1Alias)->B1_COD
+			cCodCC   := (cSB1Alias)->B1_CCCUSTO
+			cGrupo   := (cSB1Alias)->B1_GCCUSTO
+
+			// A330GRUP - PE para informar se deseja desconsiderar o grupo
+			//            contabil na montagem do saldo da MOD.
+			//
+			If lA330GRUP .And. !Empty(cCodCC)
+				lGrupo := ExecBlock("A330GRUP",.F.,.T.,{cCodPesq,cCodCC,cGrupo})
+			EndIf
+		EndIf
+
+		//
+		// Pega os saldos do centro de custo
+		//
+		aSaldos := MA330SalCC(cCodCC,dInicio,dTermino,cGrupo,lGrupo,lUsaSIGACON,cCTBIni,cCTBFim,(cSB1Alias)->B1_COD)
+		If lA330DECC
+			aSaldos := ExecBlock("A330DECC",.F.,.F.,{cCodCC,dTermino,cGrupo,lGrupo})
+		EndIf
+
+		For nX := 1 to Len(aSaldos)
+			// Verifica se moeda devera ser considerada
+			If nx # 1 .And. !(Str(nx,1,0) $ cMV_MOEDACM)
+				Loop
+			EndIf
+			aSaldos[nX] += (aSaldos[nX] * (nPercInc/100))
+		Next nX
+
+		cQuery := ""
+
+		// com MOD
+		If (cSB1Alias)->MODELO == '1'
+			// QUANTIDADE NO PERIODO POR CENTRO DE CUSTO
+			cQuery := "SELECT ISNULL(D3_QUANT,0) TOTALCC"
+			cQuery += "FROM " +cSD3CCTable
+			cQuery += "WHERE B1_COD = '" +(cSB1Alias)->B1_COD+ "' "
+			cQuery += " AND MODELO = '1' "
+			cQuery := ChangeQuery(cQuery)
+		EndIf
+
+		If (cSB1Alias)->MODELO == '2'
+			// QUANTIDADE NO PERIODO POR CENTRO DE CUSTO
+			cQuery := "SELECT SUM(ISNULL(D3_QUANT,0)) TOTALCC "
+			cQuery += " FROM " +cSD3CCTable
+			cQuery += " WHERE "
+			cQuery +=  " B1_CCCUSTO = '" +(cSB1Alias)->B1_CCCUSTO+ "' "
+			If lGrupo
+				cQuery += " AND B1_GCCUSTO = '" +(cSB1Alias)->B1_GCCUSTO+ "' "
+			EndIf
+			cQuery += " AND MODELO = '2' "
+		EndIf
+
+		If !Empty(cQuery)
+			cQuery := ChangeQuery(cQuery)
+			MpSysOpenQuery(cQuery ,cAliasMOD)
+			nQuantTot := (cAliasMOD)->TOTALCC
+			UpdSB2MOD(cSB2Table,(cSB1Alias)->B1_COD,nQuantTot,aSaldos,lA330QTMO)
+			(cAliasMOD)->(dbCloseArea())
+		EndIf
+
+		(cSB1Alias)->(dbSkip())
+	EndDo
+
+	FWFreeArray(aSaldos)
+	FWFreeArray(aCM)
+Return
+
+ /*/{Protheus.doc} UpdSB2MOD
+	Atualiza dos valores finais (custos finais) dos produtos de mão de obra
+	@type  Function
+	@author reynaldo
+	@since 14/01/2021
+	@version 1.0
+	@param param_name, param_type, param_descr
+	@return return_var, return_type, return_description
+	@example
+	(examples)
+	@see ()
+/*/
+Static Function UpdSB2MOD(cSB2Table,cProduto,nQuantTot,aSaldos,lA330QTMO)
+Local cQuery
+Local nQuant
+Local cAliasSB2
+Local cSB2Filial
+
+	cAliasSB2 := CriaTrab(NIL,.F.)
+	cSB2Filial := xFilial("SB2")
+
+	//
+	// Quantidade do produto por armazem
+	//
+	cQuery := "SELECT B2_COD, B2_LOCAL, D3_QUANT TOTAL "
+	cQuery += " FROM " +cSB2Table+ " SB2 "
+	cQuery += " WHERE SB2.B2_COD = '" +cProduto+ "' "
+	cQuery := ChangeQuery(cQuery)
+	MpSysOpenQuery(cQuery ,cAliasSB2)
+	While (cAliasSB2)->(!Eof())
+
+		nQuant := (cAliasSB2)->TOTAL
+
+		//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ?
+		//? Atualizando o Saldo em Estoque                               ?
+		//?ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ?
+		dbSelectArea("SB2")
+		dbSetOrder(1)
+		If dbSeek(cSB2Filial+(cAliasSB2)->B2_COD+(cAliasSB2)->B2_LOCAL)
+
+			RecLock("SB2",.F.)
+
+			// Atualizacao do campo B2_VFIM
+			Replace B2_VFIM1 With aSaldos[01]*ABS(nQuant/nQuantTot)
+			Replace B2_VFIM2 With If("2" $ cMV_MOEDACM,aSaldos[02]*ABS(nQuant/nQuantTot),0)
+			Replace B2_VFIM3 With If("3" $ cMV_MOEDACM,aSaldos[03]*ABS(nQuant/nQuantTot),0)
+			Replace B2_VFIM4 With If("4" $ cMV_MOEDACM,aSaldos[04]*ABS(nQuant/nQuantTot),0)
+			Replace B2_VFIM5 With If("5" $ cMV_MOEDACM,aSaldos[05]*ABS(nQuant/nQuantTot),0)
+
+			aCM := Array(5)
+			aCM[1] := CusRound(B2_VFIM1/ABS(nQuant),1)
+			aCM[2] := If("2" $ cMV_MOEDACM,CusRound(B2_VFIM2/ABS(nQuant),2),0)
+			aCM[3] := If("3" $ cMV_MOEDACM,CusRound(B2_VFIM3/ABS(nQuant),3),0)
+			aCM[4] := If("4" $ cMV_MOEDACM,CusRound(B2_VFIM4/ABS(nQuant),4),0)
+			aCM[5] := If("5" $ cMV_MOEDACM,CusRound(B2_VFIM5/ABS(nQuant),5),0)
+
+			// Atualiza o campo B2_CM somente para manter legado
+			Replace B2_CM1 With aCM[1]
+			Replace B2_CM2 With aCM[2]
+			Replace B2_CM3 With aCM[3]
+			Replace B2_CM4 With aCM[4]
+			Replace B2_CM5 With aCM[5]
+
+			// Atualiza o campo B2_CMFIM
+			Replace B2_CMFIM1 With aCM[1]
+			Replace B2_CMFIM2 With aCM[2]
+			Replace B2_CMFIM3 With aCM[3]
+			Replace B2_CMFIM4 With aCM[4]
+			Replace B2_CMFIM5 With aCM[5]
+
+			Replace B2_QFIM With nQuant
+
+			If SB2->(FieldPos('TR2_MOD')) > 0
+				Replace TR2_MOD With '1'
+			EndIf
+			//
+			// A330QTMO - Ponto de entrada utilizado para manipular a
+			//            quantidade da mao de obra apurada.
+			//
+			If lA330QTMO
+				ExecBlock("A330QTMO",.F.,.F.)
+			EndIf
+
+			MsUnlock()
+
+			TTFimComMO({SB2->B2_VFIM1,SB2->B2_VFIM2,SB2->B2_VFIM3,SB2->B2_VFIM4,SB2->B2_VFIM5})
+			TTFimQtdMO()
+
+		EndIf
+
+		(cAliasSB2)->(dbSkip())
+	EndDo
+	(cAliasSB2)->(dbCloseArea())
+Return
+
+ /*/{Protheus.doc} ExecStat
+	Execução de statments em bloco
+	@type  Function
+	@author reynaldo
+	@since 14/01/2021
+	@version 1.0
+	@param param_name, param_type, param_descr
+	@return return_var, return_type, return_description
+	@example
+	(examples)
+	@see ()
+/*/
+Static Function ExecStat(aGroupStat)
+Local nLoop
+Local cStatement
+Local nRet
+Local cMsgError
+
+	Begin Transaction
+		For nLoop := 1 to len(aGroupStat)
+			cStatement := aGroupStat[nLoop]
+			nRet := TCSQLExec(cStatement)
+			If nRet < 0
+				cMsgError := TCSQLError()
+				Final(cMsgError) // encerra o smartclient por erro
+			EndIf
+		Next nLoop
+	End Transaction
+	aGroupStat := {}
+
+Return
+
+/*
+ÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜ
+±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±
+±±ÚÄÄÄÄÄÄÄÄÄÄÂÄÄÄÄÄÄÄÄÄÄÂÄÄÄÄÄÄÄÂÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÂÄÄÄÄÄÄÂÄÄÄÄÄÄÄÄÄÄ¿±±
+±±³Fun‡…o    ³MA330SalCC³ Autor ³ Marcos Bregantim      ³ Data ³ 19/05/93 ³±±
+±±ÃÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÁÄÄÄÄÄÄÄÁÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÁÄÄÄÄÄÄÁÄÄÄÄÄÄÄÄÄÄ´±±
+±±³Descri‡…o ³ Calcula a despesa do CC no mes especificado                ³±±
+±±ÃÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´±±
+±±³Sintaxe   ³ ExpA1 := MA330SalCC(ExpC1,ExpD1,ExpC2)                     ³±±
+±±ÃÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´±±
+±±³Parametros³ ExpC1 = Codigo do CC                                       ³±±
+±±³          ³ ExpD1 = Data referente ao saldo a devolver                 ³±±
+±±³          ³ ExpC2 = Grupo de contas (FILTRAGEM CT1_GRUPO)              ³±±
+±±ÃÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´±±
+±±³Retorno   | ExpA1 = Array com os 5 custos devolvidos pela funcao       ³±±
+±±ÃÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´±±
+±±³ Uso      ³ MATA330                                                    ³±±
+±±ÀÄÄÄÄÄÄÄÄÄÄÁÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ±±
+±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±
+ßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßß*/
+Static Function MA330SalCC(cCod,dDataIni,dDataFim,cGrupo,lGrupo,lUsaSIGACON,cCTBIni,cCTBFim,cCodPro)
+Local aSaldos[5]
+Local nCont
+Local lRetExec :=.T.
+Local cFiltro
+Local cSGBD
+Local cMsg 
+
+Static lM330FCC
+
+Default cCodPro := ''
+
+If SPSMigrated() //Se estiver migrado
+	
+	If __cAssProc == Nil
+		__cAssProc := EngSPS26Signature("26")
+	EndIf
+	If __lBlind == Nil
+		__lBlind := IsBlind()
+	Endif	
+
+	If SPSMigrated()//se já está usando o novo processo de procedures
+		If __cCTB250 == NIL
+			__cCTB250   := IIF(FindFunction("GetSPName"), GetSPName("CTB250","26"), "CTB250")
+			__oCTB250   := EngSPSStatus('26',cEmpAnt)
+			__lCTB250   := __oCTB250['signature'] == __cAssProc
+		Endif
+	Endif
+
+EndIf
+
+cSGBD := TCGetDB()
+//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+//³ Tratamento para SUBSTRING em diferentes BD's ³
+//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+cFuncSubs := iIf( cSGBD $ "ORACLE/POSTGRES/DB2/INFORMIX", "SUBSTR" ,"SUBSTRING")
+AFILL(aSaldos,0)
+
+If lM330FCC == NIL
+	lM330FCC := ExistBlock("M330FCC")
+EndIf
+
+If lUsaSIGACON
+	//-- Utiliza modulo SIGACON
+
+	//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+	//³ Coloco o CT1 em ordem de Centro de Custo                     ³
+	//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+	dbSelectArea("CT1")
+	dbSetOrder(7)
+	dbSeek(xFilial("CT1")+cCod)
+	While !Eof() .And. AllTrim(xFilial("CT1")+cCod) == AllTrim(CT1_FILIAL+CT1_CC)
+		//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+		//³ Filtro de contas a serem inibidas (contas de transferencia)  ³
+		//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+		If CT1_CONTA >= cCTBIni .And. CT1_CONTA <= cCTBFim
+			dbSkip()
+			Loop
+		EndIf
+		//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+		//³ Filtro de contas atraves do grupo                             ³
+		//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+		If !Empty(cGrupo) .And. CT1_GRUPO <> cGrupo
+			dbSkip()
+			Loop
+		EndIf
+		//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+		//³ Executa filtragem por execblock                              ³
+		//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+		If lM330FCC
+			lRetExec:=ExecBlock("M330FCC",.F.,.F.,{"CT1",cCodPro})
+			If ValType(lRetExec) == "L" .And. !lRetExec
+				dbSkip()
+				Loop
+			EndIf
+		EndIf
+		//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+		//³ Calculo dos Saldos nas 5 Moedas                              ³
+		//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+		For nCont := 1 To 5
+			// Verifica se moeda devera ser considerada
+			If nCont # 1 .And. !(Str(nCont,1,0) $ cMV_MOEDACM)
+				Loop
+			EndIf
+			// a tabela CT7 foi descontinuada na vers?o 12, sendo substituida pela tabela CQ1, porem, as funç?es permanecem com o mesmo nome pelo legado
+			aSaldoFim	:= SaldoCT7(CT1_CONTA,dDataIni,StrZero(nCont,2),"1")
+			aSaldoIni	:= SaldoCT7(CT1_CONTA,dDataFim,StrZero(nCont,2),"1")
+			nDebito		:= aSaldoFim[4] - aSaldoIni[7]
+			nCredito	:= aSaldoFim[5] - aSaldoIni[8]
+			aSaldos[nCont] += nDebito - nCredito
+		Next nCont
+		dbSelectArea("CT1")
+		dbSkip()
+	EndDo
+	//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+	//³ Devolvo a ordem original do arquivo                          ³
+	//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+	dbSetOrder(1)
+
+Else
+	//-- Utiliza modulo SIGACTB
+	//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+	//³ Se for Centro de Custo Extra-Contabil -> Saldos 		        ³
+	//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+	cCod := padr(cCod,Len(CTT->CTT_CUSTO))
+
+	If lM330FCC
+		cFiltro := ExecBlock("M330FCC",.F.,.F.,{"CQ3",cCodPro})
+		If ValType(cFiltro) <> "C"
+			cFiltro := ""
+		Else
+			cFiltro += If(Right(cFiltro, 3) <> "AND", " AND ", " ")
+		EndIf
+	Else
+		cFiltro := ""
+	EndIf
+
+	If __lCTB250 .AND. cFiltro != ""
+		cMsg := OemToAnsi(STR0003) //"Com o uso do ponto de entrada M330FCC, não será possivel a execucao da procedure"
+		M330PrcLog("MENSAGEM", STR0004, cMsg ) //"Execução sem procedure"
+	EndIf
+	
+	If __lCTB250 .AND. cFiltro == ""
+		If Empty(cFiltro)
+			cFiltro := "   "
+		EndIf
+		
+		aSaldos := TCSPExec( xProcedures(__cCTB250),;
+						cFilAnt,;                  // Filial corrente
+						cCod,;                     // Centro de Custo
+						Dtos(dDataIni),;           // data inicio para o processo
+						Dtos(dDataFim),;           // Data final para o processo
+						Iif(lGrupo, "1","0"),;     // usa Grupo Contábil
+						cGrupo,;                   //Grupo Contábil
+						cCTBIni,;                  //Conta Inicial a Excluir
+						cCTBFim,;                  //Conta Final a Excluir
+						Iif(lCusEmp, "1","0"))     // Custo por Empresa (MV_CUSFIL="E")             
+
+		If Empty(aSaldos) .or. aSaldos = Nil			
+			conout(STR0005+CRLF+tcsqlerror())//'Erro na cálculo de mão de obra '			
+			lRet := .F. 
+		EndIf
+	Else
+		For nCont := 1 To 5
+			// Verifica se moeda devera ser considerada
+			If nCont # 1 .And. !(Str(nCont,1,0) $ cMV_MOEDACM)
+				Loop
+			EndIf
+			//-- Somo o saldo atual DEBITO - CREDITO
+			cQuery := "SELECT SUM(CQ3.CQ3_DEBITO) DEBITO, SUM(CQ3.CQ3_CREDIT) CREDITO "
+			cQuery += " FROM "+RetSqlName("CQ3")+" CQ3 "
+			cQuery += " WHERE EXISTS(SELECT CT1_CONTA FROM "+RetSqlName("CT1")
+			cQuery += " WHERE CT1_FILIAL = '" + xFilial("CT1") + "' AND "
+			//-- Considera grupo na filtragem caso tenha conteudo definido
+			If !Empty(cGrupo) .And. lGrupo
+				cQuery += " CT1_GRUPO = '"+cGrupo+"' AND "
+			EndIf
+			cQuery += "CT1_CONTA = CQ3.CQ3_CONTA AND D_E_L_E_T_ = ' ') AND "
+			If !lCusEmp
+				cQuery += "	CQ3.CQ3_FILIAL ='"+xFilial("CQ3")+"' AND "
+			Else
+				If FWSM0Layout() <> "FF"
+					cQuery += cFuncSubs+"(CQ3.CQ3_FILIAL,1,"+cvaltochar(len(fwcodemp()))+") = '"+FwCodEmp()+"' And "
+				EndIf
+			EndIf
+			cQuery += " CQ3.CQ3_CCUSTO = '" + cCod + "' AND "
+			Do Case
+				Case !Empty(cCTBIni) .And. !Empty(cCTBFim)
+					cQuery += " (CQ3.CQ3_CONTA < '"+cCTBIni+"'  OR "
+					cQuery += " CQ3.CQ3_CONTA > '"+cCTBFim+"')  AND "
+				Case !Empty(cCTBIni) .And. Empty(cCTBFim)
+					cQuery += " CQ3.CQ3_CONTA < '"+cCTBIni+"'  AND "
+				Case Empty(cCTBIni) .And. !Empty(cCTBFim)
+					cQuery += " CQ3.CQ3_CONTA > '"+cCTBFim+"'  AND "
+			EndCase
+			cQuery += If(! Empty(cFiltro), cFiltro, "")
+			cQuery += "CQ3.CQ3_MOEDA ='"+StrZero(nCont,2)+"' AND "
+			cQuery += "CQ3.CQ3_TPSALD ='1' AND "
+			cQuery += "CQ3.D_E_L_E_T_ = ' ' AND "
+			cQuery += "CQ3.CQ3_DATA > '"+DTOS(dDataIni-1)+"' AND "
+			cQuery += "CQ3.CQ3_DATA < '"+DTOS(dDataFim+1)+"'"
+
+			dbUseArea(.T.,"TOPCONN",TcGenQry(,,cQuery),"SLDATU",.T.,.F.)
+			aSaldos[nCont] 	+= (SLDATU->DEBITO - SLDATU->CREDITO)
+			DbCloseArea()
+		Next nCont
+	EndIf
+EndIf
+
+Return aSaldos
+
+/*
+ÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜ
+±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±
+±±ÚÄÄÄÄÄÄÄÄÄÄÂÄÄÄÄÄÄÄÄÄÄÂÄÄÄÄÄÄÄÂÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÂÄÄÄÄÄÄÂÄÄÄÄÄÄÄÄÄÄ¿±±
+±±³Fun‡…o    ³TTFimComMO³ Autor ³Rodrigo de A. Sartorio ³ Data ³ 13/11/01 ³±±
+±±ÃÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÁÄÄÄÄÄÄÄÁÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÁÄÄÄÄÄÄÁÄÄÄÄÄÄÄÄÄÄ´±±
+±±³Descri‡…o ³ Atualiza o saldo final do TRT (VFIM) baseado no val. da MOD³±±
+±±ÃÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´±±
+±±³Sintaxe   ³ TTFimComMO(ExpA1)                                          ³±±
+±±ÃÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´±±
+±±³Parametros³ ExpA1 = Array com os custos da MOD                         ³±±
+±±ÃÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´±±
+±±³ Uso      ³ Generico                                                   ³±±
+±±ÀÄÄÄÄÄÄÄÄÄÄÁÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ±±
+±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±
+ßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßß
+*/
+Static Function TTFimComMO(aCusto)
+Local nV,nX,aVFim[5]
+Local bBloco := {|nV, nX| Trim(nV)+Str(nX,1)}
+Local nDec   := Set(3,8)
+Local aArea  := GetArea()
+
+If lCusFil .Or. lCusEmp
+	//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+	//³ Posiciona no local a ser atualizado                   ³
+	//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+	dbSelectArea("TRT")
+	If !MsSeek(If(lCusEmp,Space(Len(cFilAnt)),cFilAnt)+SB2->B2_COD)
+		CriaTRT(If(lCusEmp,Space(Len(cFilAnt)),cFilAnt),SB2->B2_COD)
+	EndIf
+	RecLock("TRT",.F.)
+	//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+	//³ Pega o custo do campo e soma o custo da entrada       ³
+	//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+	If aCusto <> NIL
+		//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+		//³ Pega o custo do campo e soma o custo da entrada       ³
+		//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+		For nX := 1 to 5
+			// Verifica se moeda devera ser considerada
+			If nx # 1 .And. !(Str(nx,1,0) $ cMV_MOEDACM)
+				Loop
+			EndIf
+			aVfim[nX] := &(Eval(bBloco,"TRT->TRB_VFIM",nX)) + aCusto[nX]
+		Next nX
+	EndIf
+	Replace TRB_VFIM1 With aVFim[01]
+	If "2" $ cMV_MOEDACM
+		Replace TRB_VFIM2 With aVFim[02]
+	EndIf
+	If "3" $ cMV_MOEDACM
+		Replace TRB_VFIM3 With aVFim[03]
+	EndIf
+	If "4" $ cMV_MOEDACM
+		Replace TRB_VFIM4 With aVFim[04]
+	EndIf
+	If "5" $ cMV_MOEDACM
+		Replace TRB_VFIM5 With aVFim[05]
+	EndIf
+	MsUnlock()
+EndIf
+Set(3,nDec)
+RestArea(aArea)
+Return
+
+/*
+ÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜ
+±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±
+±±ÚÄÄÄÄÄÄÄÄÄÄÂÄÄÄÄÄÄÄÄÄÄÂÄÄÄÄÄÄÄÂÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÂÄÄÄÄÄÄÂÄÄÄÄÄÄÄÄÄÄ¿±±
+±±³Fun‡…o    ³TTFimQtdMO³ Autor ³Rodrigo de A. Sartorio ³ Data ³ 13/11/01 ³±±
+±±ÃÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÁÄÄÄÄÄÄÄÁÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÁÄÄÄÄÄÄÁÄÄÄÄÄÄÄÄÄÄ´±±
+±±³Descri‡…o ³ Atualiza a quantidade final do TRT baseado nos movimentos  ³±±
+±±ÃÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´±±
+±±³Sintaxe   ³ TTFimQtdMO()                                               ³±±
+±±ÃÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´±±
+±±³ Uso      ³ MATA330                                                    ³±±
+±±ÀÄÄÄÄÄÄÄÄÄÄÁÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ±±
+±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±
+ßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßß
+*/
+Static Function TTFimQtdMO()
+LOCAL nV,nX,aVFim[5],aCM[5]
+LOCAL bBloco := {|nV, nX| Trim(nV)+Str(nX,1)}
+LOCAL nDec   := Set(3,8)
+LOCAL aArea  := GetArea()
+
+If lCusFil .Or. lCusEmp
+	//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+	//³ Posiciona no local a ser atualizado                   ³
+	//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+	dbSelectArea("TRT")
+	If !MsSeek(If(lCusEmp,Space(Len(cFilAnt)),cFilAnt)+SB2->B2_COD)
+		CriaTRT(If(lCusEmp,Space(Len(cFilAnt)),cFilAnt),SB2->B2_COD)
+	EndIf
+	RecLock("TRT",.F.)
+	Replace TRB_QFIM  With TRB_QFIM + SB2->B2_QFIM
+	aCM[01] := TRB_CM1
+	aCM[02] := TRB_CM2
+	aCM[03] := TRB_CM3
+	aCM[04] := TRB_CM4
+	aCM[05] := TRB_CM5
+	For nX := 1 to 5
+		// Verifica se moeda devera ser considerada
+		If nx # 1 .And. !(Str(nx,1,0) $ cMV_MOEDACM)
+			Loop
+		EndIf
+		//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+		//³ Pega o custo final do campo correto                   ³
+		//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+		aVfim[nX] := &(Eval(bBloco,"TRT->TRB_VFIM",nX))
+		aCM[nX]   := aVFIM[nX]/ABS(TRB_QFIM)
+	Next nX
+	Replace TRB_CM1 With aCM[01]
+	If "2" $ cMV_MOEDACM
+		Replace TRB_CM2 With aCM[02]
+	EndIf
+	If "3" $ cMV_MOEDACM
+		Replace TRB_CM3 With aCM[03]
+	EndIf
+	If "4" $ cMV_MOEDACM
+		Replace TRB_CM4 With aCM[04]
+	EndIf
+	If "5" $ cMV_MOEDACM
+		Replace TRB_CM5 With aCM[05]
+	EndIf
+	MsUnlock()
+EndIf
+Set(3,nDec)
+RestArea(aArea)
+Return
+
+/*/{Protheus.doc} M330PrcLog
+	Encapsula chamada da ProcLogAtu para garantir gravação da filial da CV8 com a filial
+	que está executando o processo.
+	@type  Function
+	@author andre.oliveira
+	@since 04/09/2020
+	@version 1.0
+	@param cTipo, caracter, tipo do log a ser gerado
+	@param cTexto, caracter, mensagem a ser gravada no log gerado
+	@param cDetalhe, caracter, detalhe a ser gravado para o log gerado
+/*/
+Static Function M330PrcLog(cTipo,cTexto,cDetalhe)
+
+ProcLogAtu(cTipo,cTexto,cDetalhe,,,cFilBack)
+
+Return
+
+/*
+ÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜ
+±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±
+±±ÚÄÄÄÄÄÄÄÄÄÄÂÄÄÄÄÄÄÄÄÄÄÂÄÄÄÄÄÄÄÂÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÂÄÄÄÄÄÄÂÄÄÄÄÄÄÄÄÄÄ¿±±
+±±³Fun‡…o    ³ A330Mod  ³ Autor ³ Eveli Morasco         ³ Data ³ 04/02/92 ³±±
+±±ÃÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÁÄÄÄÄÄÄÄÁÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÁÄÄÄÄÄÄÁÄÄÄÄÄÄÄÄÄÄ´±±
+±±³Descri‡…o ³ Calcula o custo das requisicoes de mao de obra feitas no   ³±±
+±±³          ³ periodo                                                    ³±±
+±±ÃÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´±±
+±±³Parametros³ ExpC1 = Codigo para pesquisa no SB2                        ³±±
+±±³          ³	       MOD - Produtos mao de obra                         ³±±
+±±³          ³ ExpC2 = Codigo do CC para produtos que nao sao MOD         ³±±
+±±³          ³ ExpC3 = Grupo de contas (FILTRAGEM CT1_GRUPO)              ³±±
+±±ÃÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´±±
+±±³Sintaxe   ³ A330Mod()                                                  ³±±
+±±ÃÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´±±
+±±³ Uso      ³ PCPXFUN                                                    ³±±
+±±ÀÄÄÄÄÄÄÄÄÄÄÁÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ±±
+±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±±
+ßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßß*/
+Function A330Mod(cCodPesq,cCodCC,cGrupo)
+Local aArea       := GetArea()
+Local nX          := 0
+Local nQuant      := 0
+Local nQuantTot   := 0
+Local cCodAnt     := ''
+Local aSaldos     := {}
+Local lModOri     := cCodPesq == "MOD"
+Local lA330QTMO   := ExistBlock("A330QTMO")
+Local lA330GRUP   := ExistBlock("A330GRUP")
+Local lA330DECC   := ExistBlock("A330DECC")
+Local nTamCC      := TamSX3("CTT_CUSTO")[1]
+Local lGrupo      := .T.
+Local uGrupo
+Local dTermino    := If(Type("a330ParamZX") == "A",a330ParamZX[01],dDataBase)
+Local nPercInc    := If(Type("a330ParamZX") == "A",a330ParamZX[05],0)
+Local lUsaSIGACON := If(Type("a330ParamZX") == "A",a330ParamZX[06] == 1,.F.)
+Local cCTBIni     := If(Type("a330ParamZX") == "A",a330ParamZX[07],Space(TamSX3("CQ1_CONTA")[1]))
+Local cCTBFim     := If(Type("a330ParamZX") == "A",a330ParamZX[08],Space(TamSX3("CQ1_CONTA")[1]))
+
+Local cAliasREQ   := ''
+Local cAliasDEV   := ''
+Local cQuery  
+
+Private cMV_MOEDACM
+
+Default cCodPesq    := "MOD"
+Default cGrupo      := ""
+Default cCodCC      := ""
+
+If ExistBlock("MA330MOD")
+	ExecBlock("MA330MOD",.F.,.F.,{cCodPesq,cCodCC,cGrupo})
+Else
+	//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+	//³ A330GRUP - PE para informar se deseja desconsiderar o grupo  ³
+	//|            contabil na montagem do saldo da MOD.             |
+	//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+	If lA330GRUP .And. !Empty(cCodCC)
+		uGrupo := ExecBlock("A330GRUP",.F.,.T.,{cCodPesq,cCodCC,cGrupo})
+		If Valtype(lGrupo) == "L"
+			lGrupo := uGrupo
+		EndIf
+	EndIf
+	if cMV_MOEDACM == NIL
+		cMV_MOEDACM := SuperGetMv('MV_MOEDACM',.F.,"2345")
+	EndIf
+
+	//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+	//³ Zera os saldos de MOD para recalcular                        ³
+	//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+	dbSelectArea("SB2")
+	dbSetOrder(1)
+	dbSeek(xFilial("SB2")+cCodPesq)
+	While !Eof() .And. B2_FILIAL+If(lModOri,Substr(B2_COD,1,3),B2_COD) == xFilial("SB2")+cCodPesq
+		If SB2->B2_COD # cCodAnt
+			//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+			//³ Pega os saldos do centro de custo                            ³
+			//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+			aSaldos := MA330SalCC(If(lModOri,SubStr(SB2->B2_COD,4,nTamCC),cCodCC);
+						,dInicio,dTermino,cGrupo,lGrupo,lUsaSIGACON,cCTBIni,cCTBFim,SB2->B2_COD)
+			If lA330DECC
+				aSaldos := ExecBlock("A330DECC",.F.,.F.,{If(lModOri,SubStr(SB2->B2_COD,4,nTamCC),cCodCC),dTermino,cGrupo,lGrupo})
+			EndIf
+			cCodAnt := SB2->B2_COD
+
+			//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+			//³ Aplica o % de aumento no custo da MOD                        ³
+			//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+			For nX := 1 to Len(aSaldos)
+				// Verifica se moeda devera ser considerada
+				If nx # 1 .And. !(Str(nx,1,0) $ cMV_MOEDACM)
+					Loop
+				EndIf
+				aSaldos[nX] += (aSaldos[nX] * (nPercInc/100))
+			Next nX
+			//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+			//³ Quantidade total do produto MOD                              ³
+			//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+			nQuantTot:=0
+			//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+			//³ Filtra movimentos validos do produto                         ³
+			//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+			dbSelectArea("SD3")
+			dbSetOrder(1)
+			//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+			//³ Produtos Mao-de-Obra com a nomenclatura "MOD"                |
+			//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+			If Empty(cCodCC)
+				//-- Somatoria das Devolucoes do periodo
+				cAliasDEV := CriaTrab(NIL,.F.)
+				cQuery := "SELECT SUM(D3_QUANT) TOTDEV FROM "+RetSqlName("SD3")+ " SD3 "
+				cQuery +=    "WHERE D3_FILIAL = '" + xFilial("SD3") + "' AND "
+				cQuery +=          "D3_COD = '" + cCodAnt + "' AND "
+				cQuery +=          "D3_EMISSAO >= '" + dtos(dInicio) + "' AND "
+				cQuery +=          "D3_EMISSAO <= '" + dtos(dTermino) + "' AND "
+				cQuery +=          "D3_ESTORNO = ' ' AND "
+				cQuery +=          "D3_TM <= '500' AND "
+				cQuery +=          "D3_CF NOT IN('PR0','PR1') AND "
+				cQuery +=          "D_E_L_E_T_ = ' ' "
+				cQuery := ChangeQuery(cQuery)
+				dbUseArea(.T.,"TOPCONN",TcGenQry(,,cQuery),cAliasDEV,.T.,.T.)
+				nQuantTot += (cAliasDEV)->TOTDEV
+				dbSelectArea(cAliasDEV)
+				dbCloseArea()
+				//-- Somatoria das Requisoes do periodo
+				cAliasREQ := CriaTrab(NIL,.F.)
+				cQuery := "SELECT SUM(D3_QUANT) TOTREQ FROM "+RetSqlName("SD3")+ " SD3 "
+				cQuery +=    "WHERE D3_FILIAL = '" + xFilial("SD3") + "' AND "
+				cQuery +=          "D3_COD = '" + cCodAnt + "' AND "
+				cQuery +=          "D3_EMISSAO >= '" + dtos(dInicio) + "' AND "
+				cQuery +=          "D3_EMISSAO <= '" + dtos(dTermino) + "' AND "
+				cQuery +=          "D3_ESTORNO = ' ' AND "
+				cQuery +=          "D3_TM > '500' AND "
+				cQuery +=          "D3_CF NOT IN('PR0','PR1') AND "
+				cQuery +=          "D_E_L_E_T_ = ' ' "
+				cQuery := ChangeQuery(cQuery)
+				dbUseArea(.T.,"TOPCONN",TcGenQry(,,cQuery),cAliasREQ,.T.,.T.)
+				nQuantTot -= (cAliasREQ)->TOTREQ
+				dbSelectArea(cAliasREQ)
+				dbCloseArea()
+			//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+			//³ Produtos Mao-de-Obra sem a nomenclatura "MOD"                |
+			//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+			Else
+				//-- Somatoria das Devolucoes do periodo
+				cAliasDEV := CriaTrab(NIL,.F.)
+				cQuery := "SELECT SUM(D3_QUANT) TOTDEV FROM "+RetSqlName("SD3")+ " SD3 ,"+RetSqlName("SB1")+ " SB1 "
+				cQuery +=    "WHERE D3_FILIAL = '" + xFilial("SD3") + "' AND "
+				cQuery +=          "B1_FILIAL = '" + xFilial("SB1") + "' AND "
+				cQuery +=          "B1_COD = D3_COD AND "
+				cQuery +=          "D3_EMISSAO >= '" + dtos(dInicio) + "' AND "
+				cQuery +=          "D3_EMISSAO <= '" + dtos(dTermino) + "' AND "
+				cQuery +=          "B1_CCCUSTO = '" + cCodCC + "' AND "
+				If lGrupo
+					cQuery +=      "B1_GCCUSTO = '" + cGrupo + "' AND "
+				EndIf
+				cQuery +=          "D3_ESTORNO = ' ' AND "
+				cQuery +=          "D3_TM <= '500' AND "
+				cQuery +=          "D3_CF NOT IN('PR0','PR1') AND "
+				cQuery +=          "SD3.D_E_L_E_T_ = ' ' AND "
+				cQuery +=          "SB1.D_E_L_E_T_ = ' ' "
+				cQuery := ChangeQuery(cQuery)
+				dbUseArea(.T.,"TOPCONN",TcGenQry(,,cQuery),cAliasDEV,.T.,.T.)
+				nQuantTot += (cAliasDEV)->TOTDEV
+				dbSelectArea(cAliasDEV)
+				dbCloseArea()
+				//-- Somatoria das Devolucoes do periodo
+				cAliasREQ := CriaTrab(NIL,.F.)
+				cQuery := "SELECT SUM(D3_QUANT) TOTREQ FROM "+RetSqlName("SD3")+ " SD3 ,"+RetSqlName("SB1")+ " SB1 "
+				cQuery +=    "WHERE D3_FILIAL = '" + xFilial("SD3") + "' AND "
+				cQuery +=          "B1_FILIAL = '" + xFilial("SB1") + "' AND "
+				cQuery +=          "B1_COD = D3_COD AND "
+				cQuery +=          "D3_EMISSAO >= '" + dtos(dInicio) + "' AND "
+				cQuery +=          "D3_EMISSAO <= '" + dtos(dTermino) + "' AND "
+				cQuery +=          "B1_CCCUSTO = '" + cCodCC + "' AND "
+				If lGrupo
+					cQuery +=      "B1_GCCUSTO = '" + cGrupo + "' AND "
+				EndIf
+				cQuery +=          "D3_ESTORNO = ' ' AND "
+				cQuery +=          "D3_TM > '500' AND "
+				cQuery +=          "D3_CF NOT IN('PR0','PR1') AND "
+				cQuery +=          "SD3.D_E_L_E_T_ = ' ' AND "
+				cQuery +=          "SB1.D_E_L_E_T_ = ' ' "
+				cQuery := ChangeQuery(cQuery)
+				dbUseArea(.T.,"TOPCONN",TcGenQry(,,cQuery),cAliasREQ,.T.,.T.)
+				nQuantTot -= (cAliasREQ)->TOTREQ
+				dbSelectArea(cAliasREQ)
+				dbCloseArea()
+			EndIf
+		EndIf
+		//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+		//³ Quantidade do produto nesse armazem                          ³
+		//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+		nQuant := 0
+		//-- Somatoria das Devolucoes do periodo
+		cAliasDEV := CriaTrab(NIL,.F.)
+		cQuery := "SELECT SUM(D3_QUANT) TOTDEV FROM "+RetSqlName("SD3")+ " SD3 "
+		cQuery +=    "WHERE D3_FILIAL = '" + xFilial("SD3") + "' AND "
+		cQuery +=          "D3_COD = '" + cCodAnt + "' AND "
+		cQuery +=          "D3_LOCAL = '" + SB2->B2_LOCAL + "' AND "
+		cQuery +=          "D3_EMISSAO >= '" + dtos(dInicio) + "' AND "
+		cQuery +=          "D3_EMISSAO <= '" + dtos(dTermino) + "' AND "
+		cQuery +=          "D3_ESTORNO = ' ' AND "
+		cQuery +=          "D3_TM <= '500' AND "
+		cQuery +=          "D3_CF NOT IN('PR0','PR1') AND "
+		cQuery +=          "D_E_L_E_T_ = ' ' "
+		cQuery := ChangeQuery(cQuery)
+		dbUseArea(.T.,"TOPCONN",TcGenQry(,,cQuery),cAliasDEV,.T.,.T.)
+		nQuant += (cAliasDEV)->TOTDEV
+		dbSelectArea(cAliasDEV)
+		dbCloseArea()
+		//-- Somatoria das Requisoes do periodo
+		cAliasREQ := CriaTrab(NIL,.F.)
+		cQuery := "SELECT SUM(D3_QUANT) TOTREQ FROM "+RetSqlName("SD3")+ " SD3 "
+		cQuery +=    "WHERE D3_FILIAL = '" + xFilial("SD3") + "' AND "
+		cQuery +=          "D3_COD = '" + cCodAnt + "' AND "
+		cQuery +=          "D3_LOCAL = '" + SB2->B2_LOCAL + "' AND "
+		cQuery +=          "D3_EMISSAO >= '" + dtos(dInicio) + "' AND "
+		cQuery +=          "D3_EMISSAO <= '" + dtos(dTermino) + "' AND "
+		cQuery +=          "D3_ESTORNO = ' ' AND "
+		cQuery +=          "D3_TM > '500' AND "
+		cQuery +=          "D3_CF NOT IN('PR0','PR1') AND "
+		cQuery +=          "D_E_L_E_T_ = ' ' "
+		cQuery := ChangeQuery(cQuery)
+		dbUseArea(.T.,"TOPCONN",TcGenQry(,,cQuery),cAliasREQ,.T.,.T.)
+		nQuant -= (cAliasREQ)->TOTREQ
+		dbSelectArea(cAliasREQ)
+		dbCloseArea()
+		//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+		//³ Atualizando o Saldo em Estoque                               ³
+		//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+		dbSelectArea("SB2")
+		RecLock("SB2",.F.)
+
+		// Atualizacao do campo B2_VFIM
+		Replace B2_VFIM1 With aSaldos[01]*ABS(nQuant/nQuantTot)
+		Replace B2_VFIM2 With If("2" $ cMV_MOEDACM,aSaldos[02]*ABS(nQuant/nQuantTot),0)
+		Replace B2_VFIM3 With If("3" $ cMV_MOEDACM,aSaldos[03]*ABS(nQuant/nQuantTot),0)
+		Replace B2_VFIM4 With If("4" $ cMV_MOEDACM,aSaldos[04]*ABS(nQuant/nQuantTot),0)
+		Replace B2_VFIM5 With If("5" $ cMV_MOEDACM,aSaldos[05]*ABS(nQuant/nQuantTot),0)
+
+		// Atualiza o campo B2_CM somente para manter legado
+		Replace B2_CM1 With CusRound(B2_VFIM1/ABS(nQuant),1)
+		Replace B2_CM2 With If("2" $ cMV_MOEDACM,CusRound(B2_VFIM2/ABS(nQuant),2),0)
+		Replace B2_CM3 With If("3" $ cMV_MOEDACM,CusRound(B2_VFIM3/ABS(nQuant),3),0)
+		Replace B2_CM4 With If("4" $ cMV_MOEDACM,CusRound(B2_VFIM4/ABS(nQuant),4),0)
+		Replace B2_CM5 With If("5" $ cMV_MOEDACM,CusRound(B2_VFIM5/ABS(nQuant),5),0)
+
+		// Atualiza o campo B2_CMFIM
+		Replace B2_CMFIM1 With CusRound(B2_VFIM1/ABS(nQuant),1)
+		Replace B2_CMFIM2 With If("2" $ cMV_MOEDACM,CusRound(B2_VFIM2/ABS(nQuant),2),0)
+		Replace B2_CMFIM3 With If("3" $ cMV_MOEDACM,CusRound(B2_VFIM3/ABS(nQuant),3),0)
+		Replace B2_CMFIM4 With If("4" $ cMV_MOEDACM,CusRound(B2_VFIM4/ABS(nQuant),4),0)
+		Replace B2_CMFIM5 With If("5" $ cMV_MOEDACM,CusRound(B2_VFIM5/ABS(nQuant),5),0)
+
+		Replace B2_QFIM With nQuant
+
+		If SB2->(FieldPos('TR2_MOD')) > 0
+			Replace TR2_MOD With '1'
+		EndIf
+
+		//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+		//³ A330QTMO - Ponto de entrada utilizado para manipular a       |
+		//|            quantidade da mao de obra apurada.                ³
+		//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+		If lA330QTMO
+			ExecBlock("A330QTMO",.F.,.F.)
+		EndIf
+
+		MsUnlock()
+
+		TTFimComMO({SB2->B2_VFIM1,SB2->B2_VFIM2,SB2->B2_VFIM3,SB2->B2_VFIM4,SB2->B2_VFIM5})
+		TTFimQtdMO()
+		dbSkip()
+	EndDo
+	//ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+	//³ Devolve ordem principal dos arquivos                         ³
+	//ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+	dbSelectArea("SD3")
+	dbSetOrder(1)
+
+EndIf
+RestArea(aArea)
+aSize(aSaldos ,0)
+Return
+
+//-------------------------------------------------------------------
+/*{Protheus.doc} EngSP26Signature
+Identifica a seqUencia de controle do fonte ADVPL com a     
+stored procedure, qualquer alteracao que envolva diretamente
+a stored procedure a variavel sera incrementada.            
+Procedure CTB250                                            
+
+@author 
+                       
+@version P12
+@since   27032023
+@return  IdProc
+@obs	 
+*/
+//-------------------------------------------------------------------  
+       
+Function EngSPS26Signature(cProcesso as character)
+Return '001'
