@@ -10515,7 +10515,7 @@ If Len(a330RegCTB)>0
 					//зддддддддддддддддддддддддддддддддддддддддддддддддддддддддддддддддддддддд©
 					//Ё CA100INCL - Funcao utilizada para inclusao dos lancamentos contabeis. |
 					//юддддддддддддддддддддддддддддддддддддддддддддддддддддддддддддддддддддддды
-					cA100Incl(cArquivo,nHdlPrv,3,cLoteEst,lDigita,lAglutina,Nil,a330ParamZX[01],Nil,Nil,aDadosProva,aDiario,aAuxTpSld,,,,oJourneyLog:cIdChild)
+					cA100Incl(cArquivo,nHdlPrv,3,cLoteEst,lDigita,lAglutina,Nil,a330ParamZX[01],Nil,Nil,aDadosProva,aDiario,aAuxTpSld)
 
 					//зддддддддддддддддддддддддддддддддддддддддддддддддддддддддддддддддддддддд©
 					//Ё aTpSaldo - Tipos de saldos para reprocessamento contabil              |
@@ -10658,7 +10658,7 @@ If Len(a330RegCTB)>0
 					//зддддддддддддддддддддддддддддддддддддддддддддддддддддддддддддддддддддддд©
 					//Ё CA100INCL - Funcao utilizada para inclusao dos lancamentos contabeis. |
 					//юддддддддддддддддддддддддддддддддддддддддддддддддддддддддддддддддддддддды
-					cA100Incl(cArquivo,nHdlPrv,3,cLoteEst,lDigita,lAglutina,Nil,a330ParamZX[01],Nil,Nil,Nil,aDiario,aAuxTpSld,,,,oJourneyLog:cIdChild)
+					cA100Incl(cArquivo,nHdlPrv,3,cLoteEst,lDigita,lAglutina,Nil,a330ParamZX[01],Nil,Nil,Nil,aDiario,aAuxTpSld)
 
 					//зддддддддддддддддддддддддддддддддддддддддддддд©
 					//Ё Atualiza o log de processamento			    Ё
